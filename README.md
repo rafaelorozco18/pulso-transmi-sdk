@@ -33,6 +33,7 @@ python -m pip install -e '.[ml]'
 cp .env.example .env
 python examples/01_download.py
 python examples/02_naive_baseline.py
+python examples/03_log_linear_baseline.py
 ```
 
 En Windows PowerShell, la activación es `.venv\Scripts\Activate.ps1`.
@@ -139,6 +140,18 @@ Accuracy = 100 × max(0, 1 - WAPE)
 
 La métrica se calcula por estación y luego se promedia. El contrato definitivo
 de submissions y leaderboard se publicará antes de iniciar la ventana competitiva.
+
+## Primer modelo
+
+El primer modelo reproducible es una regresión log-lineal por estación: perfil
+horario, tipo de día, lluvia pronosticada y evento. En la validación temporal de
+los últimos 7 días del corte inicial alcanza **88,44** de accuracy promedio con
+la métrica oficial (WAPE por estación y promedio simple entre las 12). Consulta
+[docs/first-model.md](docs/first-model.md) y ejecuta
+`python examples/03_log_linear_baseline.py`.
+
+Para empaquetarlo como `joblib` y dejar un run versionado en MLflow, ejecuta
+`python examples/04_train_and_log_model.py`.
 
 ## Desarrollo del SDK
 

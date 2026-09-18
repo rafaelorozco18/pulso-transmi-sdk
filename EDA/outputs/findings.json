@@ -1,0 +1,197 @@
+{
+  "integridad": {
+    "observaciones_filas": 51840,
+    "observaciones_duplicados": 0,
+    "observaciones_faltantes": 0,
+    "observaciones_nulos": 0,
+    "demanda_cero": 0,
+    "contexto": {
+      "filas": 4320,
+      "faltantes": 0,
+      "duplicados": 0,
+      "nulos": 0,
+      "lluvia_negativa": 0,
+      "evento_fuera_0_1": 0,
+      "estaciones_sin_catalogo": 0
+    },
+    "ids_con_cero_inicial": 11
+  },
+  "estaciones": {
+    "arquetipos": {
+      "Intercambio (doble pico)": [
+        "Ricaurte",
+        "Banderas",
+        "Portal El Dorado"
+      ],
+      "Ocio nocturno": [
+        "Museo Nacional",
+        "Movistar Arena"
+      ],
+      "Oficinas (destino AM)": [
+        "Calle 100",
+        "Calle 72"
+      ],
+      "Portal (origen AM)": [
+        "Portal Américas",
+        "Portal Suba",
+        "Portal Usme"
+      ],
+      "Universitaria (mediodía)": [
+        "Universidad Nacional",
+        "Universidades"
+      ]
+    },
+    "demanda_media_red_15min": 356.5228780864198,
+    "r2_modelo_log_lineal_medio": 0.9592902013346248,
+    "fin_de_semana_indice_medio": 0.7818070325441914,
+    "efecto_viernes_pct_medio": -1.0299540231385407,
+    "efecto_domingo_vs_sabado_pct_medio": 1.5539735194596025,
+    "efecto_festivo_pct_medio": 0.8481849995063934,
+    "temperatura_estaciones_significativas": 0,
+    "ari_regla_vs_clustering": 0.6927374301675978
+  },
+  "calendario": {
+    "festivo_z_score_vs_laborales": {
+      "2026-08-07": -1.266427946345901,
+      "2026-08-17": -0.28102600539836314
+    }
+  },
+  "contexto": {
+    "lluvia_diaria_media_mm": 25.003783575140805,
+    "lluvia_diaria_max_mm": 62.74977807424351,
+    "lluvia_corr_pronostico": 0.8225739334175862,
+    "lluvia_pronostico_sesgo_mm": 0.12093679770952158,
+    "lluvia_pronostico_mae_mm": 0.23769314805532551,
+    "lluvia_pronostico_mejor_desfase_slots": 0,
+    "lluvia_vida_media_horas": 1.0,
+    "temperatura_corr_pronostico": 0.9824357596600408,
+    "temperatura_pronostico_mae_c": 0.6340082332852992,
+    "temperatura_sd_media_diaria_c": 0.06609954911457945,
+    "temperatura_r2_explicado_por_hora": 0.9660733005459732
+  },
+  "lluvia": {
+    "lluvia_efecto_pct_por_mm": {
+      "Calle 100": -9.849483419944693,
+      "Portal Suba": -5.620132449373127,
+      "Portal Américas": -3.8406676014172914,
+      "Banderas": -3.7467965973885353,
+      "Portal El Dorado": -5.1838314815574105,
+      "Universidades": -6.286827418447205,
+      "Movistar Arena": 3.600539954443338,
+      "Universidad Nacional": -8.624075537236964,
+      "Ricaurte": -2.6826521749926946,
+      "Portal Usme": -6.233228868061069,
+      "Calle 72": -7.405469976358193,
+      "Museo Nacional": 5.931469774959108
+    },
+    "estaciones_lluvia_positiva": [
+      "Movistar Arena",
+      "Museo Nacional"
+    ],
+    "r2_ganancia_lluvia_real_pp": 0.16390961364365259,
+    "r2_ganancia_lluvia_pronostico_pp": 0.10397867991094878,
+    "r2_ganancia_ambas_pp": 0.16527322986818566
+  },
+  "eventos": {
+    "eventos_n": 5,
+    "evento_lift_pct": {
+      "Calle 100": 9.989871989832078,
+      "Portal Suba": 11.909396206035039,
+      "Portal Américas": 8.129001452034679,
+      "Banderas": 9.238998973694734,
+      "Portal El Dorado": 7.858127087770006,
+      "Universidades": 11.03597105869676,
+      "Movistar Arena": 38.06430181878622,
+      "Universidad Nacional": 7.676928223168855,
+      "Ricaurte": 8.832924986984537,
+      "Portal Usme": 8.98573844894952,
+      "Calle 72": 7.653751350930649,
+      "Museo Nacional": 40.11477204943383
+    },
+    "evento_sigma_horas": [
+      3.5,
+      2.25,
+      2.25,
+      2.25,
+      3.5
+    ]
+  },
+  "autocorrelacion": {
+    "residuo_acf_lag1": 0.044549170725150605,
+    "residuo_acf_lag4": 0.03798877946840122,
+    "residuo_acf_lag96": -0.035393635530315305
+  },
+  "correlacion_estaciones": {
+    "corr_media_log_demanda_entre_estaciones": 0.4803470239334905,
+    "corr_media_residuo_entre_estaciones": 0.051752888460065954
+  },
+  "shock_diario": {
+    "shock_diario_sd_pct": 2.007249221211052,
+    "shock_diario_corr_entre_estaciones": 0.5184027550202805,
+    "shock_diario_autocorr_dia_anterior": 0.1490593774854724,
+    "shock_manana_vs_resto_corr": -0.12951508722061916,
+    "shock_manana_vs_resto_pendiente": -0.11220813291789714
+  },
+  "ruido": {
+    "ruido_exponente_var_media": 1.7776918351408704,
+    "ruido_cv_mediano": 0.15116302546492633,
+    "residuo_log_sd": 0.15048260149950804,
+    "residuo_asimetria": -0.18837538676928633,
+    "residuo_curtosis_exceso": 0.27221538737941176,
+    "var_sobre_media_mediana": 5.203388962829567
+  },
+  "estabilidad": {
+    "tendencia_pct_semana_media": 0.24454509599722007,
+    "tendencia_estaciones_significativas": 7,
+    "ultima_semana_desvio_medio_pct": 3.0087721261611287
+  },
+  "varianza_explicada_pct": {
+    "Estación (nivel medio)": 22.436073492731378,
+    "Hora del día × estación": 68.21005837079707,
+    "Laboral / fin de semana": 6.113944098329316,
+    "Lluvia": 0.13209243238613277,
+    "Evento": 0.055250417479724145,
+    "Shock diario (no observable ex ante)": 0.06799120498697242,
+    "Ruido residual": 2.9845899832893985
+  },
+  "baselines_accuracy": {
+    "Ingenuo t−1 día": 77.89082515102594,
+    "Ingenuo t−7 días": 83.11229696661745,
+    "Perfil histórico (mediana)": 87.94229532331764,
+    "Log-lineal: perfil + lluvia pronosticada + evento": 88.43669685222743,
+    "Log-lineal: perfil + lluvia real + evento": 88.52574752850505,
+    "Cota: conoce el shock diario": 88.69873927057608
+  },
+  "error_por_hora_top3": {
+    "17": 0.0849,
+    "18": 0.0776,
+    "7": 0.0703
+  },
+  "dataset": {
+    "dataset": "pulso-transmi-starter-v1",
+    "history_start": "2026-07-26T00:00:00-05:00",
+    "history_end": "2026-09-08T23:45:00-05:00",
+    "observation_rows": 51840,
+    "api_version": "0.3.0"
+  },
+  "figuras": [
+    "01_mapa_estaciones",
+    "02_distribucion_demanda",
+    "03_serie_diaria",
+    "04_heatmap_hora_estacion",
+    "05_perfiles_por_estacion",
+    "06_arquetipos",
+    "07_dia_de_semana",
+    "08_contexto_clima",
+    "09_correlacion_contexto",
+    "10_efecto_lluvia",
+    "11_eventos",
+    "12_autocorrelacion",
+    "13_correlacion_estaciones",
+    "14_shock_diario",
+    "15_ruido",
+    "16_estabilidad_semanal",
+    "17_descomposicion_varianza",
+    "18_baselines"
+  ]
+}

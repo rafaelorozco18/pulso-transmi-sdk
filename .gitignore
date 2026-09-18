@@ -9,3 +9,8 @@ build/
 artifacts/
 data/
 *.egg-info/
+
+# MLflow local (EDA y experimentos)
+mlflow.db
+mlruns/
+mlartifacts/

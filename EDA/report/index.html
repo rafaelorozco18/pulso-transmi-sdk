@@ -1,0 +1,609 @@
+<title>Anatomía de la demanda TransMi</title>
+<meta name="description" content="EDA profundo del corte inicial de Pulso TransMi: integridad, perfiles, clima, eventos, ruido, drift, baselines y esquema Postgres.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Public+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap">
+<style>
+  :root {
+    --bg: #f2f3f0;
+    --surface: #fcfcfb;
+    --ink: #15171a;
+    --ink-2: #4b4f55;
+    --muted: #7d8187;
+    --line: #dcdfd9;
+    --line-strong: #c3c6bf;
+    --accent: #2a78d6;
+    --accent-ink: #1c5cab;
+    --accent-wash: #e3eefb;
+    --warn-ink: #9a4a17;
+    --warn-wash: #fbece2;
+    --neg: #c73b3a;
+    --pos: #1c5cab;
+    --plate: #fcfcfb;
+    --sans: "Public Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1113;
+      --surface: #171a1d;
+      --ink: #eceef0;
+      --ink-2: #b7bbc1;
+      --muted: #8a8f96;
+      --line: #2a2e33;
+      --line-strong: #3a3f45;
+      --accent: #6da7ec;
+      --accent-ink: #9ec5f4;
+      --accent-wash: #16263a;
+      --warn-ink: #f0a877;
+      --warn-wash: #2e1f15;
+      --neg: #ef7b7a;
+      --pos: #86b6ef;
+      --plate: #fcfcfb;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1113;
+    --surface: #171a1d;
+    --ink: #eceef0;
+    --ink-2: #b7bbc1;
+    --muted: #8a8f96;
+    --line: #2a2e33;
+    --line-strong: #3a3f45;
+    --accent: #6da7ec;
+    --accent-ink: #9ec5f4;
+    --accent-wash: #16263a;
+    --warn-ink: #f0a877;
+    --warn-wash: #2e1f15;
+    --neg: #ef7b7a;
+    --pos: #86b6ef;
+    --plate: #fcfcfb;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 400 16px/1.6 var(--sans);
+    padding-inline: 20px;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent-ink); text-underline-offset: 2px; }
+  a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+  code, .mono { font-family: var(--mono); font-size: 0.86em; }
+  code { background: var(--accent-wash); color: var(--ink); padding: 0.08em 0.35em; border-radius: 4px; }
+
+  .shell {
+    max-width: 1240px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: 210px minmax(0, 1fr);
+    gap: 48px;
+    padding-block: 40px 96px;
+  }
+  nav.toc {
+    position: sticky;
+    top: calc(env(safe-area-inset-top, 0px) + 24px);
+    align-self: start;
+    font-size: 13.5px;
+    line-height: 1.35;
+  }
+  nav.toc p { margin: 0 0 10px; font: 500 11px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+  nav.toc ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+  nav.toc a { display: block; padding: 5px 10px; border-radius: 6px; color: var(--ink-2); text-decoration: none; border-left: 2px solid transparent; }
+  nav.toc a:hover { background: var(--surface); color: var(--ink); border-left-color: var(--accent); }
+  main { min-width: 0; max-width: 980px; }
+
+  header.hero { padding-bottom: 28px; border-bottom: 1px solid var(--line); }
+  .eyebrow { font: 500 12px/1.4 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin: 0 0 12px; }
+  h1 { font-size: clamp(2rem, 4.2vw, 3.1rem); line-height: 1.05; letter-spacing: -0.025em; font-weight: 700; margin: 0 0 14px; text-wrap: balance; }
+  .lede { font-size: 1.12rem; color: var(--ink-2); max-width: 64ch; margin: 0 0 22px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 6px 18px; font: 400 12.5px/1.5 var(--mono); color: var(--muted); margin: 0; padding: 0; list-style: none; }
+  .meta b { color: var(--ink-2); font-weight: 500; }
+
+  .pulse { margin: 26px 0 6px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px 12px; }
+  .pulse-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; font-size: 13px; color: var(--ink-2); margin-bottom: 8px; }
+  .pulse-head strong { color: var(--ink); font-weight: 600; }
+  .legend { display: inline-flex; gap: 14px; align-items: center; font-size: 12.5px; }
+  .legend i { display: inline-block; width: 14px; height: 8px; border-radius: 2px; background: var(--accent); vertical-align: middle; margin-right: 5px; }
+  .legend i.line { height: 2px; background: #eb6834; border-radius: 1px; }
+  .pulse svg { display: block; width: 100%; height: auto; }
+  .pulse .bars rect { fill: var(--accent); opacity: 0.85; }
+  .pulse polyline { fill: none; stroke: #eb6834; stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+  .pulse .axis text { fill: var(--muted); font: 400 11px var(--mono); }
+  .pulse .axis line { stroke: var(--line-strong); stroke-width: 1; }
+
+  .readouts { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-top: 22px; }
+  .readout { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .readout .v { font-size: 1.85rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; }
+  .readout .v small { font-size: 0.55em; font-weight: 600; color: var(--ink-2); margin-left: 2px; }
+  .readout .k { font-size: 13px; color: var(--ink-2); line-height: 1.4; margin-top: 6px; }
+
+  section { padding-top: 56px; }
+  h2 { font-size: 1.65rem; line-height: 1.2; letter-spacing: -0.015em; margin: 0 0 6px; text-wrap: balance; scroll-margin-top: 24px; }
+  h3 { font-size: 1.08rem; margin: 30px 0 8px; letter-spacing: -0.005em; }
+  .kicker { font: 500 12px/1.4 var(--mono); color: var(--accent-ink); letter-spacing: 0.04em; text-transform: uppercase; margin: 0 0 8px; }
+  p { margin: 0 0 14px; max-width: 70ch; }
+  .section-lede { color: var(--ink-2); font-size: 1.04rem; }
+  ul.findings { margin: 12px 0 0; padding: 0; list-style: none; display: grid; gap: 10px; counter-reset: f; }
+  ul.findings li { position: relative; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px 12px 52px; max-width: none; }
+  ul.findings li::before { counter-increment: f; content: counter(f); position: absolute; left: 16px; top: 12px; width: 24px; height: 24px; border-radius: 50%; background: var(--accent-wash); color: var(--accent-ink); font: 600 12px/24px var(--mono); text-align: center; }
+  ul.findings b { font-weight: 600; }
+
+  figure { margin: 22px 0 8px; }
+  figure .plate { display: block; background: var(--plate); border: 1px solid var(--line); border-radius: 10px; padding: 10px; overflow: hidden; }
+  figure img { display: block; width: 100%; max-width: 100%; height: auto; }
+  figure .plate.narrow { max-width: 620px; }
+  figure .plate.mid { max-width: 760px; }
+  figcaption { font-size: 13.5px; color: var(--ink-2); margin-top: 8px; max-width: 80ch; }
+  figcaption b { color: var(--ink); font-weight: 600; font-family: var(--mono); font-size: 12px; letter-spacing: 0.02em; margin-right: 6px; }
+
+  .implication { border-left: 3px solid var(--accent); background: var(--surface); border-radius: 0 10px 10px 0; padding: 12px 16px; margin: 16px 0 6px; max-width: 76ch; }
+  .implication p { margin: 0; }
+  .implication p + p { margin-top: 8px; }
+  .implication .tag { font: 500 11px/1 var(--mono); letter-spacing: 0.07em; text-transform: uppercase; color: var(--accent-ink); display: block; margin-bottom: 7px; }
+  .caution { border-left-color: var(--warn-ink); background: var(--warn-wash); }
+  .caution .tag { color: var(--warn-ink); }
+
+  .table-wrap { overflow-x: auto; margin: 16px 0 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  th { font: 500 11.5px/1.3 var(--mono); letter-spacing: 0.03em; color: var(--muted); text-transform: uppercase; background: var(--bg); white-space: nowrap; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td .neg { color: var(--neg); font-weight: 500; }
+  td .pos { color: var(--pos); font-weight: 500; }
+  tr.best td { background: var(--accent-wash); }
+  .pill { display: inline-block; font: 500 11px/1.5 var(--mono); padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--ink-2); white-space: nowrap; }
+  .pill.high { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-wash); }
+  .pill.low { color: var(--muted); }
+  .pill.no { border-style: dashed; color: var(--muted); }
+
+  .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin: 16px 0; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .card h4 { margin: 0 0 6px; font-size: 14.5px; }
+  .card p, .card ul { font-size: 14px; color: var(--ink-2); margin: 0; }
+  .card ul { padding-left: 18px; }
+  .card code { font-size: 12px; }
+  pre { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; overflow-x: auto; font: 400 13px/1.55 var(--mono); margin: 12px 0; }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  footer { margin-top: 64px; padding-top: 18px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+
+  @media (max-width: 1080px) {
+    .shell { grid-template-columns: minmax(0, 1fr); gap: 0; }
+    nav.toc { display: none; }
+  }
+  @media (max-width: 520px) {
+    body { padding-inline: 16px; font-size: 15px; }
+    .readout .v { font-size: 1.5rem; }
+    ul.findings li { padding-left: 46px; }
+    ul.findings li::before { left: 12px; }
+  }
+</style>
+
+<div class="shell">
+  <nav class="toc" aria-label="Contenido">
+    <p>Contenido</p>
+    <ol>
+      <li><a href="#hallazgos">Hallazgos clave</a></li>
+      <li><a href="#integridad">Integridad</a></li>
+      <li><a href="#estaciones">Estaciones</a></li>
+      <li><a href="#calendario">Calendario</a></li>
+      <li><a href="#perfiles">Perfiles y arquetipos</a></li>
+      <li><a href="#clima">Clima y contexto</a></li>
+      <li><a href="#lluvia">Efecto de la lluvia</a></li>
+      <li><a href="#eventos">Eventos</a></li>
+      <li><a href="#dependencia">Dependencia temporal</a></li>
+      <li><a href="#ruido">Ruido</a></li>
+      <li><a href="#drift">Estabilidad y drift</a></li>
+      <li><a href="#determinantes">Qué determina la demanda</a></li>
+      <li><a href="#baselines">Baselines</a></li>
+      <li><a href="#modelo">Implicaciones para el modelo</a></li>
+      <li><a href="#postgres">Esquema Postgres</a></li>
+      <li><a href="#mlflow">MLflow y reproducción</a></li>
+    </ol>
+  </nav>
+
+  <main>
+    <header class="hero">
+      <p class="eyebrow">Pulso TransMi · Análisis exploratorio del corte inicial</p>
+      <h1>Anatomía de la demanda TransMi</h1>
+      <p class="lede">Qué explica la demanda cada 15 minutos en 12 estaciones, qué tanto se puede predecir y qué conviene guardar para operar un modelo que se reentrena. Las cifras salen de <code>EDA/eda.py</code> sobre el corte publicado por la API.</p>
+      <ul class="meta">
+        <li><b>Corte</b> 26 jul – 8 sep 2026 (45 días)</li>
+        <li><b>Grilla</b> 12 estaciones × 4.320 slots</li>
+        <li><b>Filas</b> 51.840 obs · 4.320 contexto</li>
+        <li><b>Dataset</b> pulso-transmi-starter-v1</li>
+        <li><b>sha256 obs</b> ecc6a321…7eacd</li>
+        <li><b>API</b> 0.3.0</li>
+      </ul>
+
+      <div class="pulse" role="img" aria-label="Demanda media de la red por slot de 15 minutos: día laboral en barras con picos a las 7:15 y 18:00; fin de semana en línea, más bajo y con la misma forma.">
+        <div class="pulse-head">
+          <span><strong>El pulso de la red:</strong> demanda media total por slot de 15 min (12 estaciones). Pico laboral a las 18:00 con 9.368 pax. Mínimo nocturno de 1.754.</span>
+          <span class="legend"><span><i></i>Laboral</span><span><i class="line"></i>Fin de semana</span></span>
+        </div>
+        <svg viewBox="0 0 960 150" aria-hidden="true"><g class="bars"><rect x="1" y="101.2" width="8" height="24.8" rx="1.5"/><rect x="11" y="101.6" width="8" height="24.4" rx="1.5"/><rect x="21" y="102.4" width="8" height="23.6" rx="1.5"/><rect x="31" y="102.6" width="8" height="23.4" rx="1.5"/><rect x="41" y="102.9" width="8" height="23.1" rx="1.5"/><rect x="51" y="103.6" width="8" height="22.4" rx="1.5"/><rect x="61" y="103.6" width="8" height="22.4" rx="1.5"/><rect x="71" y="103.9" width="8" height="22.1" rx="1.5"/><rect x="81" y="103.6" width="8" height="22.4" rx="1.5"/><rect x="91" y="103.8" width="8" height="22.2" rx="1.5"/><rect x="101" y="103.9" width="8" height="22.1" rx="1.5"/><rect x="111" y="103.5" width="8" height="22.5" rx="1.5"/><rect x="121" y="102.9" width="8" height="23.1" rx="1.5"/><rect x="131" y="102.8" width="8" height="23.2" rx="1.5"/><rect x="141" y="101.6" width="8" height="24.4" rx="1.5"/><rect x="151" y="100.4" width="8" height="25.6" rx="1.5"/><rect x="161" y="97.6" width="8" height="28.4" rx="1.5"/><rect x="171" y="94.3" width="8" height="31.7" rx="1.5"/><rect x="181" y="90.0" width="8" height="36.0" rx="1.5"/><rect x="191" y="83.5" width="8" height="42.5" rx="1.5"/><rect x="201" y="76.6" width="8" height="49.4" rx="1.5"/><rect x="211" y="68.2" width="8" height="57.8" rx="1.5"/><rect x="221" y="58.5" width="8" height="67.5" rx="1.5"/><rect x="231" y="47.4" width="8" height="78.6" rx="1.5"/><rect x="241" y="36.5" width="8" height="89.5" rx="1.5"/><rect x="251" y="29.4" width="8" height="96.6" rx="1.5"/><rect x="261" y="22.0" width="8" height="104.0" rx="1.5"/><rect x="271" y="16.0" width="8" height="110.0" rx="1.5"/><rect x="281" y="13.4" width="8" height="112.6" rx="1.5"/><rect x="291" y="13.2" width="8" height="112.8" rx="1.5"/><rect x="301" y="16.4" width="8" height="109.6" rx="1.5"/><rect x="311" y="19.5" width="8" height="106.5" rx="1.5"/><rect x="321" y="24.3" width="8" height="101.7" rx="1.5"/><rect x="331" y="33.3" width="8" height="92.7" rx="1.5"/><rect x="341" y="42.3" width="8" height="83.7" rx="1.5"/><rect x="351" y="50.1" width="8" height="75.9" rx="1.5"/><rect x="361" y="56.7" width="8" height="69.3" rx="1.5"/><rect x="371" y="63.7" width="8" height="62.3" rx="1.5"/><rect x="381" y="69.8" width="8" height="56.2" rx="1.5"/><rect x="391" y="74.5" width="8" height="51.5" rx="1.5"/><rect x="401" y="79.0" width="8" height="47.0" rx="1.5"/><rect x="411" y="81.5" width="8" height="44.5" rx="1.5"/><rect x="421" y="83.3" width="8" height="42.7" rx="1.5"/><rect x="431" y="84.4" width="8" height="41.6" rx="1.5"/><rect x="441" y="85.4" width="8" height="40.6" rx="1.5"/><rect x="451" y="84.8" width="8" height="41.2" rx="1.5"/><rect x="461" y="85.5" width="8" height="40.5" rx="1.5"/><rect x="471" y="84.9" width="8" height="41.1" rx="1.5"/><rect x="481" y="83.8" width="8" height="42.2" rx="1.5"/><rect x="491" y="84.6" width="8" height="41.4" rx="1.5"/><rect x="501" y="83.7" width="8" height="42.3" rx="1.5"/><rect x="511" y="83.7" width="8" height="42.3" rx="1.5"/><rect x="521" y="83.6" width="8" height="42.4" rx="1.5"/><rect x="531" y="83.4" width="8" height="42.6" rx="1.5"/><rect x="541" y="84.2" width="8" height="41.8" rx="1.5"/><rect x="551" y="84.6" width="8" height="41.4" rx="1.5"/><rect x="561" y="84.2" width="8" height="41.8" rx="1.5"/><rect x="571" y="82.7" width="8" height="43.3" rx="1.5"/><rect x="581" y="82.1" width="8" height="43.9" rx="1.5"/><rect x="591" y="79.7" width="8" height="46.3" rx="1.5"/><rect x="601" y="76.5" width="8" height="49.5" rx="1.5"/><rect x="611" y="72.4" width="8" height="53.6" rx="1.5"/><rect x="621" y="66.2" width="8" height="59.8" rx="1.5"/><rect x="631" y="59.0" width="8" height="67.0" rx="1.5"/><rect x="641" y="50.7" width="8" height="75.3" rx="1.5"/><rect x="651" y="43.2" width="8" height="82.8" rx="1.5"/><rect x="661" y="34.2" width="8" height="91.8" rx="1.5"/><rect x="671" y="25.8" width="8" height="100.2" rx="1.5"/><rect x="681" y="18.6" width="8" height="107.4" rx="1.5"/><rect x="691" y="12.7" width="8" height="113.3" rx="1.5"/><rect x="701" y="9.1" width="8" height="116.9" rx="1.5"/><rect x="711" y="8.7" width="8" height="117.3" rx="1.5"/><rect x="721" y="8.0" width="8" height="118.0" rx="1.5"/><rect x="731" y="10.6" width="8" height="115.4" rx="1.5"/><rect x="741" y="17.6" width="8" height="108.4" rx="1.5"/><rect x="751" y="22.7" width="8" height="103.3" rx="1.5"/><rect x="761" y="30.4" width="8" height="95.6" rx="1.5"/><rect x="771" y="38.0" width="8" height="88.0" rx="1.5"/><rect x="781" y="44.8" width="8" height="81.2" rx="1.5"/><rect x="791" y="51.9" width="8" height="74.1" rx="1.5"/><rect x="801" y="58.6" width="8" height="67.4" rx="1.5"/><rect x="811" y="63.1" width="8" height="62.9" rx="1.5"/><rect x="821" y="69.5" width="8" height="56.5" rx="1.5"/><rect x="831" y="74.1" width="8" height="51.9" rx="1.5"/><rect x="841" y="78.1" width="8" height="47.9" rx="1.5"/><rect x="851" y="81.1" width="8" height="44.9" rx="1.5"/><rect x="861" y="84.4" width="8" height="41.6" rx="1.5"/><rect x="871" y="87.1" width="8" height="38.9" rx="1.5"/><rect x="881" y="89.4" width="8" height="36.6" rx="1.5"/><rect x="891" y="91.9" width="8" height="34.1" rx="1.5"/><rect x="901" y="94.1" width="8" height="31.9" rx="1.5"/><rect x="911" y="95.6" width="8" height="30.4" rx="1.5"/><rect x="921" y="97.1" width="8" height="28.9" rx="1.5"/><rect x="931" y="98.5" width="8" height="27.5" rx="1.5"/><rect x="941" y="100.1" width="8" height="25.9" rx="1.5"/><rect x="951" y="100.7" width="8" height="25.3" rx="1.5"/></g><polyline points="5,104.6 15,105.8 25,106.4 35,107.8 45,108.4 55,108.0 65,108.5 75,108.6 85,109.0 95,108.9 105,108.8 115,108.5 125,108.3 135,107.8 145,107.4 155,106.0 165,104.6 175,101.2 185,97.8 195,92.4 205,87.1 215,80.4 225,73.3 235,65.4 245,57.9 255,51.3 265,44.0 275,41.0 285,40.7 295,40.4 305,43.9 315,48.0 325,54.1 335,59.6 345,63.1 355,71.6 365,77.6 375,81.7 385,87.2 395,90.0 405,91.8 415,93.4 425,94.9 435,95.3 445,95.9 455,95.0 465,95.2 475,95.8 485,94.5 495,94.5 505,94.2 515,94.3 525,94.3 535,94.4 545,94.2 555,93.5 565,94.4 575,93.3 585,92.3 595,90.0 605,87.7 615,84.3 625,80.3 635,74.5 645,68.5 655,63.1 665,54.9 675,50.0 685,47.1 695,40.0 705,36.5 715,32.6 725,36.0 735,36.2 745,39.2 755,44.4 765,48.5 775,51.1 785,56.4 795,63.2 805,66.1 815,71.0 825,75.7 835,77.3 845,80.3 855,84.6 865,86.4 875,91.7 885,93.2 895,94.8 905,96.8 915,98.7 925,99.6 935,101.7 945,103.2 955,104.0"/><g class="axis"><line x1="0" y1="126" x2="960" y2="126"/><line x1="0" y1="126" x2="0" y2="131"/><text x="0" y="145" text-anchor="start">0h</text><line x1="120" y1="126" x2="120" y2="131"/><text x="120" y="145" text-anchor="middle">3h</text><line x1="240" y1="126" x2="240" y2="131"/><text x="240" y="145" text-anchor="middle">6h</text><line x1="360" y1="126" x2="360" y2="131"/><text x="360" y="145" text-anchor="middle">9h</text><line x1="480" y1="126" x2="480" y2="131"/><text x="480" y="145" text-anchor="middle">12h</text><line x1="600" y1="126" x2="600" y2="131"/><text x="600" y="145" text-anchor="middle">15h</text><line x1="720" y1="126" x2="720" y2="131"/><text x="720" y="145" text-anchor="middle">18h</text><line x1="840" y1="126" x2="840" y2="131"/><text x="840" y="145" text-anchor="middle">21h</text><line x1="960" y1="126" x2="960" y2="131"/><text x="960" y="145" text-anchor="end">24h</text></g></svg>
+      </div>
+
+      <div class="readouts">
+        <div class="readout"><div class="v">96,8<small>%</small></div><div class="k">de la varianza de log(demanda) la explican estación × tipo de día × hora</div></div>
+        <div class="readout"><div class="v">15<small>%</small></div><div class="k">de ruido multiplicativo (CV), sin memoria entre slots</div></div>
+        <div class="readout"><div class="v">88,4</div><div class="k">de accuracy en el mejor baseline factible. La cota con shock diario conocido es 88,7</div></div>
+        <div class="readout"><div class="v">−9,8 / +5,9<small>%</small></div><div class="k">de cambio por mm de lluvia: Calle 100 (baja) y Museo Nacional (sube)</div></div>
+        <div class="readout"><div class="v">+40<small>%</small></div><div class="k">de demanda en estaciones de ocio con un evento a intensidad 1</div></div>
+      </div>
+    </header>
+
+    <section id="hallazgos">
+      <p class="kicker">Resumen</p>
+      <h2>Hallazgos clave</h2>
+      <ul class="findings">
+        <li><b>Los datos están limpios y la grilla completa.</b> Hay 0 duplicados, 0 huecos, 0 nulos y 0 ceros. Los 12 <code>station_id</code> son texto de 5 dígitos y 11 empiezan con cero, así que no se pueden guardar como número.</li>
+        <li><b>La hora del día es lo que más pesa, y cada estación tiene su propia forma.</b> El slot × estación explica el 68 % de la varianza, el nivel de la estación el 22 % y laboral/fin de semana el 6 %. Hay cinco arquetipos claros: portales (pico AM), intercambios (doble pico), oficinas (pico PM), universidades (mediodía) y ocio nocturno (pico 20:00).</li>
+        <li><b>El calendario se reduce a dos tipos de día.</b> Lunes a viernes son equivalentes (±1 %) y sábado ≈ domingo. Los festivos del 7 y 17 de agosto se comportaron como días laborales normales. En el fin de semana, oficinas y universidades caen al 48 %, portales e intercambios al ~82 % y las estaciones de ocio suben al 128 %.</li>
+        <li><b>La lluvia actúa en el mismo intervalo y su signo depende de la estación.</b> Cada mm reduce la demanda hasta un 9,8 % (Calle 100, U. Nacional, Calle 72), pero la aumenta en Movistar Arena (+3,6 %) y Museo Nacional (+5,9 %). La respuesta crece con la intensidad: con más de 3 mm llega a −17 % o +10 %.</li>
+        <li><b>Los eventos son 5 pulsos gaussianos que llegan a su máximo a las 19:45, siempre en días laborales.</b> Suben la demanda +38–40 % en Movistar Arena y Museo Nacional y +8–12 % en el resto de la red, con σ entre 2,25 y 3,5 h.</li>
+        <li><b>La temperatura no aporta nada.</b> El 97 % de su varianza es el ciclo diurno y ninguna estación tiene un coeficiente significativo al controlar por la hora. Los pronósticos se parecen a lo observado: r = 0,82 en lluvia y r = 0,98 en temperatura.</li>
+        <li><b>El ruido es multiplicativo (varianza ∝ media<sup>1,78</sup>) y casi no tiene memoria.</b> El residuo tiene una ACF de 0,04 a 15 min y los rezagos recientes aportan poco más allá del perfil. Por eso el error no debería empeorar mucho al alargar el horizonte.</li>
+        <li><b>El techo de accuracy con estos datos es de ~88,7.</b> El perfil histórico logra 87,9 y sumando lluvia pronosticada y evento llega a 88,4. En la fase estática ya casi no hay margen, así que la competencia se va a decidir por qué tan rápido el pipeline detecta y absorbe los cambios que anuncia el reto.</li>
+        <li><b>Hay señales tempranas de deriva.</b> 7 estaciones muestran una tendencia positiva significativa (~0,3–0,75 % por semana) y en los dos últimos días 8 estaciones quedaron entre +3 y +6 % sobre el perfil. Todavía no alcanza para llamarlo drift, pero es justo el patrón que hay que vigilar.</li>
+      </ul>
+    </section>
+
+    <section id="integridad">
+      <p class="kicker">Calidad de datos</p>
+      <h2>Integridad del corte</h2>
+      <p class="section-lede">Antes de analizar comprobé las tres tablas contra la grilla esperada de 15 minutos entre <span class="mono">2026-07-26T00:00-05:00</span> y <span class="mono">2026-09-08T23:45-05:00</span>. Los SHA-256 coinciden con <code>/v1/meta</code>.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Chequeo</th><th class="num">Observaciones</th><th class="num">Contexto</th><th>Qué implica</th></tr></thead>
+          <tbody>
+            <tr><td>Filas / esperadas</td><td class="num">51.840 / 51.840</td><td class="num">4.320 / 4.320</td><td>La grilla está completa: 4.320 slots por estación</td></tr>
+            <tr><td>Duplicados</td><td class="num">0</td><td class="num">0</td><td>La clave natural <code>(station_id, observed_at)</code> es válida</td></tr>
+            <tr><td>Timestamps faltantes o fuera de grilla</td><td class="num">0</td><td class="num">0</td><td>No hace falta imputar. En operación, un hueco es una alerta</td></tr>
+            <tr><td>Nulos</td><td class="num">0</td><td class="num">0</td><td>Todas las columnas pueden ser <code>NOT NULL</code></td></tr>
+            <tr><td>Demanda cero o negativa</td><td class="num">0</td><td class="num">—</td><td>Mínimo 14 pax/15 min: el log es seguro</td></tr>
+            <tr><td>Lluvia negativa · evento fuera de [0, 1]</td><td class="num">—</td><td class="num">0 · 0</td><td>Los rangos sirven como CHECK en Postgres</td></tr>
+            <tr><td>Estaciones sin catálogo</td><td class="num">0</td><td class="num">—</td><td>Integridad referencial completa</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="implication caution">
+        <span class="tag">Ojo</span>
+        <p><code>event_intensity</code> nunca llega a cero exacto: sus colas bajan hasta 1e−190. Para un <code>numeric</code> de precisión fija eso es ruido, así que la columna debe ser <code>double precision</code>. Para decidir si un slot tiene evento uso el umbral 0,01.</p>
+      </div>
+    </section>
+
+    <section id="estaciones">
+      <p class="kicker">Estaciones</p>
+      <h2>Tres escalas de volumen en 12 estaciones</h2>
+      <p class="section-lede">Ricaurte (684 pax/15 min), Banderas (591) y Portal El Dorado (511) tienen el doble de volumen medio que el resto. La distribución de todas es muy asimétrica: la mediana queda muy por debajo de la media porque los picos concentran el flujo.</p>
+      <figure>
+        <span class="plate narrow"><img src="figures/01_mapa_estaciones.png" alt="Mapa de dispersión de las 12 estaciones por latitud y longitud, con el tamaño proporcional a la demanda media y el color según arquetipo." loading="lazy"></span>
+        <figcaption><b>FIG 01</b>No hay mapa base, solo coordenadas. El arquetipo no depende de la geografía: las estaciones de ocio y las universitarias están intercaladas en el centro-oriente.</figcaption>
+      </figure>
+      <figure>
+        <span class="plate"><img src="figures/02_distribucion_demanda.png" alt="Boxplots horizontales de la demanda por estación en escala logarítmica, y barras con la razón de demanda diaria fin de semana sobre laboral." loading="lazy"></span>
+        <figcaption><b>FIG 02</b>Izquierda: la distribución por estación en escala log. Derecha: el fin de semana separa tres grupos muy distintos (128 %, ~82 % y ~48 %).</figcaption>
+      </figure>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>Estación</th><th>Corredor</th><th>Arquetipo</th><th class="num">Media</th><th class="num">P95</th><th class="num">Fin de semana</th><th class="num">Lluvia %/mm</th><th class="num">Evento</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">05000</td><td>Portal Américas</td><td>Américas</td><td>Portal (origen AM)</td><td class="num">342</td><td class="num">974</td><td class="num">81 %</td><td class="num"><span class="neg">−3,8</span></td><td class="num">+8 %</td></tr>
+            <tr><td class="mono">03000</td><td>Portal Suba</td><td>Suba</td><td>Portal (origen AM)</td><td class="num">258</td><td class="num">754</td><td class="num">82 %</td><td class="num"><span class="neg">−5,6</span></td><td class="num">+12 %</td></tr>
+            <tr><td class="mono">09000</td><td>Portal Usme</td><td>Caracas</td><td>Portal (origen AM)</td><td class="num">218</td><td class="num">629</td><td class="num">83 %</td><td class="num"><span class="neg">−6,2</span></td><td class="num">+9 %</td></tr>
+            <tr><td class="mono">07111</td><td>Ricaurte</td><td>NQS</td><td>Intercambio (doble pico)</td><td class="num">684</td><td class="num">1.627</td><td class="num">82 %</td><td class="num"><span class="neg">−2,7</span></td><td class="num">+9 %</td></tr>
+            <tr><td class="mono">05100</td><td>Banderas</td><td>Américas</td><td>Intercambio (doble pico)</td><td class="num">591</td><td class="num">1.369</td><td class="num">82 %</td><td class="num"><span class="neg">−3,7</span></td><td class="num">+9 %</td></tr>
+            <tr><td class="mono">06000</td><td>Portal El Dorado</td><td>Calle 26</td><td>Intercambio (doble pico)</td><td class="num">511</td><td class="num">1.205</td><td class="num">82 %</td><td class="num"><span class="neg">−5,2</span></td><td class="num">+8 %</td></tr>
+            <tr><td class="mono">02300</td><td>Calle 100</td><td>Autonorte</td><td>Oficinas (destino AM)</td><td class="num">294</td><td class="num">909</td><td class="num">48 %</td><td class="num"><span class="neg">−9,8</span></td><td class="num">+10 %</td></tr>
+            <tr><td class="mono">09122</td><td>Calle 72</td><td>Caracas</td><td>Oficinas (destino AM)</td><td class="num">250</td><td class="num">768</td><td class="num">48 %</td><td class="num"><span class="neg">−7,4</span></td><td class="num">+8 %</td></tr>
+            <tr><td class="mono">07107</td><td>Universidad Nacional</td><td>NQS</td><td>Universitaria (mediodía)</td><td class="num">281</td><td class="num">662</td><td class="num">48 %</td><td class="num"><span class="neg">−8,6</span></td><td class="num">+8 %</td></tr>
+            <tr><td class="mono">06111</td><td>Universidades – CityU</td><td>Calle 26</td><td>Universitaria (mediodía)</td><td class="num">239</td><td class="num">569</td><td class="num">47 %</td><td class="num"><span class="neg">−6,3</span></td><td class="num">+11 %</td></tr>
+            <tr><td class="mono">10009</td><td>Museo Nacional</td><td>Carrera 7-10</td><td>Ocio nocturno</td><td class="num">338</td><td class="num">910</td><td class="num">128 %</td><td class="num"><span class="pos">+5,9</span></td><td class="num">+40 %</td></tr>
+            <tr><td class="mono">07105</td><td>Movistar Arena</td><td>NQS</td><td>Ocio nocturno</td><td class="num">273</td><td class="num">729</td><td class="num">128 %</td><td class="num"><span class="pos">+3,6</span></td><td class="num">+38 %</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="mono" style="font-size:12px;color:var(--muted)">Media y P95 en pax/15 min. «Fin de semana» = demanda diaria fin de semana / laboral. Lluvia y evento son coeficientes del modelo log-lineal por estación (todos con p &lt; 1e−9).</p>
+    </section>
+
+    <section id="calendario">
+      <p class="kicker">Calendario</p>
+      <h2>Solo importan dos tipos de día</h2>
+      <p class="section-lede">La serie diaria repite el mismo patrón las seis semanas completas. Al controlar por perfil, el viernes queda en −1,0 % y el domingo en +1,6 % frente al sábado: son efectos pequeños y solo significativos en algunas estaciones. Los dos festivos del periodo no se distinguen de un día laboral.</p>
+      <figure>
+        <span class="plate"><img src="figures/03_serie_diaria.png" alt="Barras de demanda diaria total de la red, en azul los laborales y en naranja los fines de semana, con los dos festivos anotados." loading="lazy"></span>
+        <figcaption><b>FIG 03</b>Batalla de Boyacá (vie 7 ago) quedó −2,6 % frente a un viernes típico (z = −1,3) y la Asunción (lun 17 ago) −1,2 % (z = −0,3). Ninguno de los dos se sale de la variación normal.</figcaption>
+      </figure>
+      <figure>
+        <span class="plate mid"><img src="figures/07_dia_de_semana.png" alt="Mapa de calor del índice de demanda diaria por estación y día de la semana, con la media de lunes a viernes igual a 100." loading="lazy"></span>
+        <figcaption><b>FIG 07</b>De lunes a viernes todas las celdas están entre 97 y 102. El fin de semana forma los mismos tres bloques de la figura 02.</figcaption>
+      </figure>
+      <div class="implication">
+        <span class="tag">Para el modelo</span>
+        <p>Usa <code>day_type ∈ {laboral, fin_de_semana}</code> en lugar de 7 dummies de día: cuesta menos parámetros y el perfil queda más estable. Guarda <code>is_holiday</code> en el calendario, pero no la uses como feature mientras no aparezca un efecto. Si el escenario introduce festivos con efecto, el monitoreo de nivel lo va a detectar.</p>
+      </div>
+    </section>
+
+    <section id="perfiles">
+      <p class="kicker">Perfiles horarios</p>
+      <h2>Cinco formas de moverse por la ciudad</h2>
+      <p class="section-lede">Normalicé el perfil de cada estación por su media y clasifiqué la forma resultante con una regla transparente según dónde cae el pico. Después lo validé con un clustering jerárquico independiente.</p>
+      <figure>
+        <span class="plate"><img src="figures/04_heatmap_hora_estacion.png" alt="Dos mapas de calor, día laboral y fin de semana, con el porcentaje de la demanda diaria de cada estación que cae en cada hora." loading="lazy"></span>
+        <figcaption><b>FIG 04</b>Porcentaje de la demanda diaria que cae en cada hora. Portales: de 5 a 8 h. Oficinas: de 17 a 18 h. Universidades: de 10 a 14 h. Ocio: de 18 a 22 h. La forma del fin de semana es casi la misma que la laboral.</figcaption>
+      </figure>
+      <figure>
+        <span class="plate"><img src="figures/05_perfiles_por_estacion.png" alt="Doce paneles con el perfil medio de 15 minutos de cada estación: laboral con banda P10–P90 y fin de semana." loading="lazy"></span>
+        <figcaption><b>FIG 05</b>La banda P10–P90 del día laboral es estrecha en valles y picos: el perfil es muy repetible. Museo Nacional y Movistar Arena son las únicas donde la curva del fin de semana supera a la laboral.</figcaption>
+      </figure>
+      <figure>
+        <span class="plate"><img src="figures/06_arquetipos.png" alt="Dendrograma del clustering jerárquico de la forma del perfil y perfiles normalizados medios de los cinco arquetipos." loading="lazy"></span>
+        <figcaption><b>FIG 06</b>El clustering de Ward coincide bien con la regla (ARI = 0,69). La única diferencia es que Portal Suba cae junto a los intercambios, porque su pico PM es relativamente alto.</figcaption>
+      </figure>
+      <div class="implication">
+        <span class="tag">Para el modelo</span>
+        <p>Un modelo global con <code>station_id × slot × day_type</code> (o con el perfil histórico como feature) captura casi toda la señal. El arquetipo puede servir como feature jerárquica para compartir información entre estaciones parecidas, sobre todo si llegan estaciones nuevas o si un cambio afecta a un tipo de zona completo.</p>
+      </div>
+    </section>
+
+    <section id="clima">
+      <p class="kicker">Contexto</p>
+      <h2>Clima: la lluvia es la única señal exógena útil</h2>
+      <p class="section-lede">El contexto es uno solo para toda la red. Llueve casi siempre un poco: 25 mm/día en promedio y un máximo de 62,7 mm. La lluvia pierde la mitad de su autocorrelación en 1 hora y no tiene hora preferida. La temperatura, en cambio, es un ciclo diurno casi fijo, con desviación de 0,07 °C entre las medias diarias.</p>
+      <figure>
+        <span class="plate"><img src="figures/08_contexto_clima.png" alt="Seis paneles: lluvia diaria, lluvia media por hora, ciclo diurno de temperatura, pronóstico de lluvia contra observado, pronóstico de temperatura contra observado y autocorrelación de la lluvia." loading="lazy"></span>
+        <figcaption><b>FIG 08</b>El pronóstico de lluvia sobrestima en promedio 0,12 mm, con MAE de 0,24 mm. Su mejor alineación es sin desfase: no viene corrido en el tiempo. El de temperatura tiene MAE de 0,63 °C.</figcaption>
+      </figure>
+      <figure>
+        <span class="plate narrow"><img src="figures/09_correlacion_contexto.png" alt="Matriz de correlación de Spearman entre demanda total, demanda sobre perfil, lluvia, temperatura, evento, hora y fin de semana." loading="lazy"></span>
+        <figcaption><b>FIG 09</b>La demanda total correlaciona con la temperatura (0,46) solo porque ambas siguen la hora: cos(hora) vs. temperatura = −0,85. Al quitar el perfil («Demanda / perfil») la temperatura cae a 0,02 y lo que queda es lluvia (−0,28) y evento (+0,17).</figcaption>
+      </figure>
+      <div class="implication caution">
+        <span class="tag">Trampa de correlación</span>
+        <p>La temperatura parece predictiva, pero no lo es: repite la información de la hora. En 0 de 12 estaciones tiene un coeficiente significativo al controlar por el perfil. Mejor excluirla, o el modelo aprenderá una relación que se rompe si cambia el clima.</p>
+      </div>
+    </section>
+
+    <section id="lluvia">
+      <p class="kicker">Lluvia</p>
+      <h2>Menos viajes a trabajo y estudio, más a ocio</h2>
+      <p class="section-lede">La lluvia reduce la demanda en las 10 estaciones de trabajo, estudio y conexión, y la aumenta en las dos de ocio nocturno. El efecto es inmediato: la correlación con el residuo es máxima en el rezago 0 y decae al mismo ritmo que la autocorrelación de la lluvia. No hay un efecto retardado propio.</p>
+      <figure>
+        <span class="plate"><img src="figures/10_efecto_lluvia.png" alt="Tres paneles: efecto por mm de lluvia por estación con intervalos de confianza, respuesta por bins de intensidad para los dos grupos y correlación por rezago." loading="lazy"></span>
+        <figcaption><b>FIG 10</b>Con más de 3 mm en el intervalo (24 slots en todo el corte), las estaciones con efecto negativo caen −17 % y las de ocio suben +10 %. El efecto por hora del día es similar: lo modifica poco.</figcaption>
+      </figure>
+      <div class="implication">
+        <span class="tag">Para el modelo</span>
+        <p>Usa <code>rain_forecast</code>, que es lo que se conoce al momento de predecir, con una pendiente por estación o por arquetipo. Ganancia media en R²: +0,10 pp con el pronóstico y +0,16 pp con la lluvia real. En varianza parece poco, pero en WAPE vale +1,9 puntos en Movistar Arena y +2,1 en Museo Nacional (figura 18).</p>
+        <p>Si el ciclo de predicción recibe <code>rain_mm</code> observada hasta el cutoff, sirve para horizontes muy cortos, porque la lluvia persiste cerca de 1 hora.</p>
+      </div>
+    </section>
+
+    <section id="eventos">
+      <p class="kicker">Eventos</p>
+      <h2>Noches de evento: pulsos gaussianos a las 19:45</h2>
+      <p class="section-lede">Hay 5 eventos en 45 días: lun 3 ago, lun 10 ago, mar 18 ago, mié 26 ago y vie 4 sep. Todos llegan a intensidad 1,0 a las 19:45. Tres tienen σ ≈ 2,25 h (intensidad &gt; 0,5 durante 5,25 h) y dos σ ≈ 3,5 h (8,25 h). Ninguno cayó en fin de semana.</p>
+      <figure>
+        <span class="plate"><img src="figures/11_eventos.png" alt="Serie completa de event_intensity con los cinco pulsos anotados, barras de impacto por estación y perfiles con y sin evento para Museo Nacional y Movistar Arena." loading="lazy"></span>
+        <figcaption><b>FIG 11</b>En los días con evento, Museo Nacional pasa de ~830 a ~1.190 pax/15 min en el pico nocturno. El resto del día no cambia: el efecto está confinado a la ventana del pulso.</figcaption>
+      </figure>
+      <div class="implication">
+        <span class="tag">Para el modelo</span>
+        <p><code>event_intensity</code> entra como variable continua y multiplicativa: <code>log(demanda) += β<sub>estación</sub> · intensidad</code>. Con solo 5 eventos, estimar un β por estación es frágil. Es más robusto un β por arquetipo (ocio ≈ +0,33 en log, resto ≈ +0,09).</p>
+        <p>Hay que confirmar que la intensidad futura esté disponible al predecir (<code>/v1/context</code> o el ciclo). Si no lo está, el evento va al monitoreo y no a las features.</p>
+      </div>
+    </section>
+
+    <section id="dependencia">
+      <p class="kicker">Estructura temporal</p>
+      <h2>Mucha estacionalidad, casi nada de memoria</h2>
+      <p class="section-lede">La serie cruda tiene autocorrelación fuerte en 1 y 7 días, y más en las estaciones de un solo pico. Pero cuando quito el perfil, la lluvia y el evento, el residuo queda casi independiente: ACF de 0,04 a 15 min, 0,04 a 1 hora y −0,04 a 24 horas.</p>
+      <figure>
+        <span class="plate"><img src="figures/12_autocorrelacion.png" alt="Autocorrelación de log demanda hasta 14 días para tres estaciones y autocorrelación del residuo hasta 48 horas con banda de significancia." loading="lazy"></span>
+        <figcaption><b>FIG 12</b>A la izquierda, la estacionalidad diaria y semanal. A la derecha, el residuo cae dentro de la banda de ruido (gris) en pocas horas.</figcaption>
+      </figure>
+      <figure>
+        <span class="plate"><img src="figures/13_correlacion_estaciones.png" alt="Dos matrices de correlación entre estaciones: log demanda cruda y residuo del modelo." loading="lazy"></span>
+        <figcaption><b>FIG 13</b>Estaciones del mismo arquetipo correlacionan 0,91–0,95 en crudo. Esa correlación viene del ciclo compartido: en el residuo la media entre pares baja a 0,05.</figcaption>
+      </figure>
+      <figure>
+        <span class="plate"><img src="figures/14_shock_diario.png" alt="Mapa de calor del desvío medio diario por estación respecto al modelo y dispersión del desvío de la mañana contra el resto del día." loading="lazy"></span>
+        <figcaption><b>FIG 14</b>Hay shocks diarios comunes a toda la red (correlación media entre estaciones de 0,52; por ejemplo, 27 jul abajo y 8 sep arriba), pero son pequeños: 2,0 % de desviación. Persisten poco al día siguiente (0,15) y la mañana no anticipa la tarde (r = −0,13).</figcaption>
+      </figure>
+      <div class="implication">
+        <span class="tag">Para el modelo</span>
+        <p>Rezagos como <code>t−1</code> o <code>t−96</code> casi no aportan como features. El baseline <code>t−1 día</code> es el peor (77,9) porque arrastra el ruido de ayer. Para los cuatro horizontes esto es una buena noticia: un modelo basado en perfil + contexto debería perder muy poca precisión al alargar el horizonte.</p>
+        <p>La información reciente sí sirve para medir cambios de nivel sostenidos (drift) con ventanas de varios días, no de horas.</p>
+      </div>
+    </section>
+
+    <section id="ruido">
+      <p class="kicker">Ruido</p>
+      <h2>Ruido multiplicativo con un CV de ~15 %</h2>
+      <p class="section-lede">La varianza de cada celda (estación, tipo de día, slot) crece como media<sup>1,78</sup>, muy por encima de un Poisson (varianza/media mediana = 5,2) y cerca de un CV constante. En escala log, el residuo es casi normal: sd 0,150, asimetría −0,19, curtosis en exceso 0,27.</p>
+      <figure>
+        <span class="plate"><img src="figures/15_ruido.png" alt="Dispersión log-log de varianza contra media por celda con curvas de referencia y histograma de residuos en escala log con normal superpuesta." loading="lazy"></span>
+        <figcaption><b>FIG 15</b>Un ruido lognormal con σ = 0,15 fija un error absoluto esperado de ~12 % aun con el modelo perfecto. De ahí sale el techo de ~88 de accuracy.</figcaption>
+      </figure>
+      <div class="implication">
+        <span class="tag">Para el modelo</span>
+        <p>Modela en <code>log(demanda)</code> o usa una pérdida adecuada (Poisson/Tweedie en boosting, o MAE). Para WAPE, predice la <b>mediana</b> (<code>exp(ŷ<sub>log</sub>)</code>), no la media: la corrección <code>+σ²/2</code> empeora el error absoluto. Los intervalos de predicción salen directamente como <code>exp(ŷ ± 1,28·0,15)</code> para un P10–P90.</p>
+      </div>
+    </section>
+
+    <section id="drift">
+      <p class="kicker">Estabilidad</p>
+      <h2>Una deriva lenta que conviene vigilar</h2>
+      <p class="section-lede">El README anuncia cambios de patrón durante la competencia. Ya en el corte estático, 7 de 12 estaciones tienen una tendencia lineal positiva significativa (media de +0,24 % por semana). En los dos últimos días (7–8 sep), 8 estaciones quedan entre +3 y +6 % sobre el perfil (media de la red: +3,0 %).</p>
+      <figure>
+        <span class="plate"><img src="figures/16_estabilidad_semanal.png" alt="Mapa de calor del desvío semanal por estación frente al perfil y dot plot de tendencia lineal por estación con intervalos de confianza." loading="lazy"></span>
+        <figcaption><b>FIG 16</b>Las semanas de los extremos solo tienen 1 día (dom 26 jul) y 2 días (7–8 sep), así que sus valores son más ruidosos. Las semanas completas del medio quedan dentro de ±2,3 %.</figcaption>
+      </figure>
+      <div class="implication caution">
+        <span class="tag">Interpretación prudente</span>
+        <p>Con una sd diaria de 2 %, un +3–6 % en dos días tiene una probabilidad baja pero no despreciable de ser azar compartido: el 8 sep es el día con el shock común más alto. Buen criterio de alerta: media geométrica de <code>demanda / perfil</code> en una ventana de 3–7 días fuera de ±3 % en varias estaciones a la vez. Es la vista <code>v_observations_vs_profile</code> del esquema.</p>
+      </div>
+    </section>
+
+    <section id="determinantes">
+      <p class="kicker">Síntesis</p>
+      <h2>¿Qué determina la demanda?</h2>
+      <p class="section-lede">Añadí los componentes uno por uno y medí cuánta varianza de <code>log(demanda)</code> explica cada uno. El orden importa poco, porque los factores son casi ortogonales.</p>
+      <figure>
+        <span class="plate"><img src="figures/17_descomposicion_varianza.png" alt="Barras horizontales con el porcentaje de varianza explicada por cada componente: estación, hora, tipo de día, lluvia, evento, shock diario y ruido." loading="lazy"></span>
+        <figcaption><b>FIG 17</b>Hora × estación: 68,2 %. Estación: 22,4 %. Tipo de día: 6,1 %. Lluvia, evento y shock diario: 0,1 % cada uno. Ruido irreducible: 3,0 %.</figcaption>
+      </figure>
+      <div class="implication">
+        <span class="tag">Lectura correcta</span>
+        <p>Lluvia y evento explican poca varianza global porque afectan a pocos slots y a pocas estaciones, no porque sean irrelevantes. Donde actúan mueven la demanda un 10–40 %, y ahí es donde un modelo sin contexto acumula su peor error.</p>
+      </div>
+    </section>
+
+    <section id="baselines">
+      <p class="kicker">Referencia de desempeño</p>
+      <h2>Baselines con la métrica oficial</h2>
+      <p class="section-lede">Validación temporal: entrené hasta el 1 sep 23:45 y evalué del 2 al 8 sep (7 días, con el evento del 4 sep). Accuracy = 100 × (1 − WAPE) por estación, promediada.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Método</th><th class="num">Accuracy</th><th>Factible en producción</th><th>Comentario</th></tr></thead>
+          <tbody>
+            <tr><td>Ingenuo t−1 día</td><td class="num">77,89</td><td><span class="pill">sí</span></td><td>Arrastra el ruido de ayer y confunde viernes con sábado</td></tr>
+            <tr><td>Ingenuo t−7 días</td><td class="num">83,11</td><td><span class="pill">sí</span></td><td>Respeta el tipo de día, pero con una sola muestra</td></tr>
+            <tr><td>Perfil histórico (mediana estación × tipo de día × slot)</td><td class="num">87,94</td><td><span class="pill">sí</span></td><td>El baseline que hay que superar</td></tr>
+            <tr class="best"><td><b>Log-lineal: perfil + lluvia pronosticada + evento</b></td><td class="num"><b>88,44</b></td><td><span class="pill high">sí</span></td><td>El mejor factible. +1,9 y +2,1 pts en las estaciones de ocio</td></tr>
+            <tr><td>Log-lineal: perfil + lluvia real + evento</td><td class="num">88,53</td><td><span class="pill low">parcial</span></td><td>Solo si hay lluvia observada del horizonte</td></tr>
+            <tr><td>Cota: conoce el shock diario</td><td class="num">88,70</td><td><span class="pill no">no</span></td><td>Ceiling práctico con esta información</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <figure>
+        <span class="plate"><img src="figures/18_baselines.png" alt="Barras de accuracy por método, dot plot de accuracy por estación del perfil y del mejor modelo, y barras de participación del error por hora con WAPE horario." loading="lazy"></span>
+        <figcaption><b>FIG 18</b>El error absoluto se concentra en los picos (17–19 h y 6–8 h) porque ahí está el volumen, aunque el WAPE relativo de cada hora sea casi constante (10–13 %).</figcaption>
+      </figure>
+    </section>
+
+    <section id="modelo">
+      <p class="kicker">Recomendaciones</p>
+      <h2>Implicaciones para el modelo</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Feature o decisión</th><th>Evidencia</th><th>Prioridad</th></tr></thead>
+          <tbody>
+            <tr><td><code>station_id</code> × <code>slot</code> (0–95) × <code>day_type</code>, o el perfil histórico como feature</td><td>96,8 % de la varianza (fig. 17)</td><td><span class="pill high">esencial</span></td></tr>
+            <tr><td>Objetivo en log (o pérdida Poisson/Tweedie) y predicción de la mediana</td><td>Ruido multiplicativo, CV 15 % (fig. 15)</td><td><span class="pill high">esencial</span></td></tr>
+            <tr><td><code>rain_forecast</code> con pendiente por estación o arquetipo</td><td>−9,8 % a +5,9 % por mm, signo según arquetipo (fig. 10)</td><td><span class="pill high">alta</span></td></tr>
+            <tr><td><code>event_intensity</code> con efecto por arquetipo</td><td>+38–40 % en ocio, +8–12 % en el resto (fig. 11)</td><td><span class="pill high">alta</span></td></tr>
+            <tr><td>Corrección de nivel por ventana reciente (3–7 días) o reentrenamiento con decaimiento temporal</td><td>Tendencia de +0,24 %/sem y cambios anunciados (fig. 16)</td><td><span class="pill high">alta</span></td></tr>
+            <tr><td><code>archetype</code> como feature jerárquica</td><td>5 formas estables, ARI 0,69 (fig. 06)</td><td><span class="pill">media</span></td></tr>
+            <tr><td><code>is_friday</code>, <code>is_sunday</code></td><td>−1,0 % y +1,6 %, poco consistentes</td><td><span class="pill low">baja</span></td></tr>
+            <tr><td>Rezagos <code>t−1</code>, <code>t−4</code>, <code>t−96</code></td><td>ACF del residuo ≈ 0,04 (fig. 12)</td><td><span class="pill low">baja</span></td></tr>
+            <tr><td><code>is_holiday</code></td><td>Sin efecto medible (fig. 03)</td><td><span class="pill no">monitorear</span></td></tr>
+            <tr><td><code>temperature_c</code>, <code>temperature_forecast</code></td><td>Colineales con la hora, 0/12 significativas (fig. 09)</td><td><span class="pill no">excluir</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="grid-2">
+        <div class="card">
+          <h4>Estrategia de validación</h4>
+          <ul>
+            <li>Backtesting con origen móvil (rolling-origin) por semanas y siempre con separación temporal.</li>
+            <li>Reportar accuracy por estación y por horizonte: las estaciones de ocio son las más sensibles.</li>
+            <li>Comparar siempre contra el perfil histórico (87,9), no contra el ingenuo.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h4>Señales de reentrenamiento</h4>
+          <ul>
+            <li>Nivel: media geométrica de demanda/perfil fuera de ±3 % en una ventana de 3–7 días.</li>
+            <li>Desempeño: accuracy rolling de 24 h más de 2 pts bajo la de validación.</li>
+            <li>Sensibilidad: β de lluvia o de evento re-estimado fuera de su IC 95 %.</li>
+            <li>Forma: cambio en la hora del pico o en el reparto del día (fig. 04).</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="postgres">
+      <p class="kicker">Persistencia</p>
+      <h2>Esquema Postgres</h2>
+      <p class="section-lede"><code>EDA/schema.sql</code> define 18 tablas y 5 vistas en el esquema <code>pulso</code>. Lo probé en Postgres 16 cargando las 51.840 observaciones reales, calculando WAPE desde las vistas y forzando violaciones de cada restricción clave. Está desplegado en Supabase (proyecto <code>pulso-transmi</code>, us-east-1, Postgres 17.6) mediante migraciones en <code>supabase/migrations/</code>, con RLS activo y acceso solo para <code>service_role</code>.</p>
+      <figure>
+        <a class="plate mid" href="figures/19_esquema_supabase.png" target="_blank" rel="noopener"><img src="figures/19_esquema_supabase.png" alt="Diagrama entidad-relación del esquema pulso desplegado en Supabase: 18 tablas en cinco dominios, 5 vistas y 20 llaves foráneas." loading="lazy"></a>
+        <figcaption><b>FIG 19</b>Diagrama generado leyendo la base desplegada en Supabase (<code>supabase/diagrams/generate_schema_diagram.py</code>). Colores por dominio. PK/FK marcan llaves, <code>?</code> indica columnas que admiten null, la línea con pata de gallo es una relación uno a muchos y las líneas punteadas indican de qué tablas lee cada vista. Abre la imagen para verla en tamaño completo.</figcaption>
+      </figure>
+      <div class="grid-2">
+        <div class="card">
+          <h4>Datos de la API</h4>
+          <p><code>stations</code> (con <code>archetype</code>) · <code>observations</code> PK (station_id, observed_at) · <code>context</code> PK observed_at · <code>calendar_days</code> · <code>observation_revisions</code> (un trigger audita los valores reenviados)</p>
+        </div>
+        <div class="card">
+          <h4>Ingesta incremental</h4>
+          <p><code>dataset_snapshots</code> (hashes del corte) · <code>ingestion_runs</code> (estado, filas, error, commit, run de GitHub) · <code>ingestion_cursors</code> (el cursor exacto de la API)</p>
+        </div>
+        <div class="card">
+          <h4>Perfil base y modelos</h4>
+          <p><code>profile_versions</code> + <code>station_profiles</code> (mediana/P10/P90 por estación × day_type × slot) · <code>model_versions</code> (<code>mlflow_run_id</code>, commit, <code>training_data_end</code>, un solo activo) · <code>retraining_decisions</code></p>
+        </div>
+        <div class="card">
+          <h4>Competencia</h4>
+          <p><code>forecast_cycles</code> · <code>forecast_runs</code> (<code>client_run_id</code>, cutoff) · <code>predictions</code> (<code>horizon_steps</code>, intervalo) · <code>submissions</code> (<code>Idempotency-Key</code> única, payload y respuesta) · <code>leaderboard_snapshots</code></p>
+        </div>
+        <div class="card">
+          <h4>Monitoreo</h4>
+          <p><code>drift_signals</code> (nivel, WAPE rolling, sesgo, sensibilidad a lluvia/evento, forma, calidad) · vistas <code>v_prediction_errors</code>, <code>v_accuracy_by_station</code>, <code>v_accuracy_rolling_24h</code>, <code>v_observations_vs_profile</code>, <code>v_pipeline_status</code></p>
+        </div>
+        <div class="card">
+          <h4>Decisiones que vienen del EDA</h4>
+          <ul>
+            <li><code>station_id text</code> con CHECK <code>^[0-9]{5}$</code>.</li>
+            <li>CHECK de alineación a 15 min (epoch % 900).</li>
+            <li>Perfil por <code>day_type</code>, no por día de la semana.</li>
+            <li>Contexto a nivel red y <code>event_intensity double precision</code>.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="implication">
+        <span class="tag">Contrato de envío</span>
+        <p>Las tablas <code>forecast_runs</code>, <code>predictions</code> y <code>model_versions</code> guardan exactamente lo que pide <code>POST /v1/submissions</code> (schema 1.0): <code>cycle_id</code>, <code>client_run_id</code>, <code>data_cutoff</code>, <code>model{version, trained_at, training_data_end, git_commit}</code> y hasta 100 predicciones <code>(station_id, target_at, value)</code>. 12 estaciones × 4 horizontes = 48 por envío.</p>
+      </div>
+    </section>
+
+    <section id="mlflow">
+      <p class="kicker">Trazabilidad</p>
+      <h2>MLflow y reproducción</h2>
+      <p class="section-lede">El EDA queda versionado como un run del experimento <code>pulso-transmi-eda</code>: los parámetros del corte (versión de API, rango, SHA-256 de cada archivo), el dataset como input con su digest, 98 métricas (efectos, baselines, ruido, drift) y como artefactos las 18 figuras, las tablas, <code>findings.json</code>, <code>schema.sql</code> y este reporte. Así cada conclusión queda atada al corte del que salió, y los modelos futuros se comparan contra estas mismas métricas.</p>
+      <pre><code># desde la raíz del repo
+python -m pip install -e '.[ml]' -r EDA/requirements.txt
+python EDA/eda.py              # usa EDA/data si existe; --refresh vuelve a descargar
+mlflow ui --backend-store-uri sqlite:///mlflow.db   # http://127.0.0.1:5000</code></pre>
+      <div class="grid-2">
+        <div class="card">
+          <h4>Qué versionar con MLflow</h4>
+          <ul>
+            <li>EDA: un run por corte de datos (este).</li>
+            <li>Entrenamiento: params, features, <code>training_data_end</code>, métricas por estación y horizonte, modelo registrado.</li>
+            <li>Decisiones de reentrenamiento: un tag con la señal que lo disparó.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h4>Dónde vive el tracking</h4>
+          <p>Por defecto en <code>sqlite:///mlflow.db</code> + <code>mlartifacts/</code> (ignorados por git). Para compartir entre GitHub Actions y el equipo, apunta <code>MLFLOW_TRACKING_URI</code> a un servidor con backend Postgres en una base separada de <code>pulso</code>, y usa almacenamiento de objetos para los artefactos.</p>
+        </div>
+      </div>
+      <div class="implication caution">
+        <span class="tag">Límites de este análisis</span>
+        <p>La demanda, el clima y los eventos son sintéticos: los efectos describen el generador, no a Bogotá. Solo hay 45 días y 5 eventos, así que los β de evento por estación tienen incertidumbre. Falta confirmar qué contexto futuro entrega cada ciclo de predicción. Y <code>/v1/meta</code> expone <code>generator_seed</code>: no conviene usarlo, porque el reto evalúa la operación del pipeline.</p>
+      </div>
+    </section>
+
+    <footer>
+      Generado por <span class="mono">EDA/eda.py</span> · figuras en <span class="mono">EDA/report/figures</span> · tablas en <span class="mono">EDA/outputs</span> · 16 sep 2026
+    </footer>
+  </main>
+</div>

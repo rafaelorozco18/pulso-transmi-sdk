@@ -1,0 +1,7 @@
+metodo,accuracy
+Ingenuo t−1 día,77.89082515102594
+Ingenuo t−7 días,83.11229696661745
+Perfil histórico (mediana),87.94229532331764
+Log-lineal: perfil + lluvia pronosticada + evento,88.43669685222743
+Log-lineal: perfil + lluvia real + evento,88.52574752850505
+Cota: conoce el shock diario,88.69873927057608

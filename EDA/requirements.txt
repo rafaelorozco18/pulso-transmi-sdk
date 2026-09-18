@@ -1,0 +1,5 @@
+# Dependencias del EDA (además del SDK: pip install -e '.[ml]')
+matplotlib>=3.9,<4
+scipy>=1.13,<2
+statsmodels>=0.14,<1
+mlflow>=3.0,<4
