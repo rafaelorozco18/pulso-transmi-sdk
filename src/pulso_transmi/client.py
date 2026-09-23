@@ -24,7 +24,7 @@ class PulsoTransmiClient:
         timeout: float = 30.0,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
-        resolved_url = base_url or os.getenv("PULSO_API_URL", DEFAULT_BASE_URL)
+        resolved_url = base_url or os.getenv("PULSO_API_URL") or DEFAULT_BASE_URL
         resolved_key = api_key or os.getenv("PULSO_API_KEY")
         headers = {"User-Agent": "pulso-transmi-python/0.1.0"}
         if resolved_key:

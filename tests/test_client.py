@@ -51,6 +51,12 @@ def test_stations_keep_leading_zero() -> None:
     assert stations.iloc[0]["station_id"] == "03000"
 
 
+def test_blank_api_url_uses_default(monkeypatch) -> None:
+    monkeypatch.setenv("PULSO_API_URL", "")
+    with PulsoTransmiClient(transport=httpx.MockTransport(handler)) as api:
+        assert api.meta()["dataset"]["observation_rows"] == 2
+
+
 def test_all_observation_pages_are_joined() -> None:
     with client() as api:
         observations = api.observations_dataframe()
