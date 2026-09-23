@@ -93,6 +93,21 @@ class PulsoTransmiClient:
         params = {"start": start, "end": end, "cursor": cursor, "limit": limit}
         return self._get("/v1/context", params={key: value for key, value in params.items() if value is not None}).json()
 
+    def stream_observations_page(
+        self,
+        *,
+        cursor: str | None = None,
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        """Obtiene observaciones liberadas durante la competencia.
+
+        A diferencia de ``observations_page``, esta ruta no representa el
+        corte estático inicial: expone los slots que el reloj competitivo ya
+        hizo públicos.
+        """
+        params = {"cursor": cursor, "limit": limit}
+        return self._get("/v1/stream/observations", params={key: value for key, value in params.items() if value is not None}).json()
+
     def _all_pages(self, endpoint: str, params: dict[str, Any]) -> Iterator[dict[str, Any]]:
         cursor = None
         seen: set[str] = set()

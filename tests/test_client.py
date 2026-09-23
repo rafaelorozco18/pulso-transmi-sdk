@@ -30,6 +30,12 @@ def handler(request: httpx.Request) -> httpx.Response:
             "count": 1,
             "next_cursor": None,
         })
+    if request.url.path == "/v1/stream/observations":
+        return httpx.Response(200, json={
+            "data": [{"observed_at": "2026-09-09T05:00:00Z", "station_id": "03000", "demand": 14}],
+            "count": 1,
+            "next_cursor": None,
+        })
     if request.url.path == "/v1/downloads/stations.csv":
         return httpx.Response(200, content=b"station_id,name\n03000,Portal Suba\n")
     return httpx.Response(404, json={"detail": "not found"})
@@ -49,6 +55,13 @@ def test_all_observation_pages_are_joined() -> None:
     with client() as api:
         observations = api.observations_dataframe()
     assert observations["demand"].tolist() == [10, 12]
+
+
+def test_stream_observations_page() -> None:
+    with client() as api:
+        page = api.stream_observations_page(limit=5000)
+    assert page["data"][0]["demand"] == 14
+    assert page["next_cursor"] is None
 
 
 def test_download_verifies_checksum(tmp_path) -> None:

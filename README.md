@@ -111,6 +111,23 @@ El repositorio de cada equipo debe dejar trazabilidad de:
 - momento y razón de cada reentrenamiento;
 - errores de ingesta o inferencia.
 
+## Colector horario de datos competitivos
+
+Los datos nuevos no se añaden al corte inicial de `/v1/observations`: se
+publican en `/v1/stream/observations` conforme avanza el reloj virtual. El
+colector idempotente los inserta en Supabase y conserva `last_observed_at` en
+`pulso.ingestion_cursors`:
+
+```bash
+python pipeline/bootstrap_supabase.py --stream
+```
+
+El workflow [`.github/workflows/collector.yml`](.github/workflows/collector.yml)
+lo ejecuta cada hora a los cinco minutos. Antes de activarlo en GitHub, configura
+el secret `DATABASE_URL`; `PULSO_API_URL` puede configurarse como variable de
+repositorio y, si se omite, se usa la URL pública por defecto. Las ejecuciones
+simultáneas se serializan para que no compitan por el mismo cursor.
+
 ## GitHub Actions
 
 [`templates/pipeline.yml`](templates/pipeline.yml) es una plantilla manual. Cópiala

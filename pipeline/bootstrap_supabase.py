@@ -84,6 +84,32 @@ def fetch_api(workdir: Path) -> dict:
     }
 
 
+def fetch_stream() -> dict:
+    """Descarga todas las observaciones ya liberadas por el reloj competitivo."""
+    base_url = os.getenv("PULSO_API_URL", DEFAULT_BASE_URL).rstrip("/")
+    records: list[dict] = []
+    cursor = None
+    seen: set[str] = set()
+    with PulsoTransmiClient(base_url=base_url) as client:
+        meta = client.meta()
+        while True:
+            page = client.stream_observations_page(cursor=cursor, limit=5000)
+            records.extend(page["data"])
+            cursor = page.get("next_cursor")
+            if cursor is None:
+                break
+            if cursor in seen:
+                raise RuntimeError("la API devolvió un cursor repetido en /v1/stream/observations")
+            seen.add(cursor)
+    clock = httpx.get(f"{base_url}/v1/clock", timeout=30).json()
+    return {
+        "meta": meta,
+        "server_time": clock.get("server_time"),
+        "observations": pd.DataFrame(records),
+        "cursor_out": cursor,
+    }
+
+
 def with_calendar_columns(observations: pd.DataFrame, context: pd.DataFrame) -> pd.DataFrame:
     frame = observations.merge(context[["observed_at", "event_intensity"]], on="observed_at", how="left", validate="many_to_one")
     ts = pd.to_datetime(frame["observed_at"], utc=True).dt.tz_convert(TZ)
@@ -271,9 +297,73 @@ def load(conn: psycopg.Connection, api: dict, run_id: int, mlflow_run_id: str | 
     return {"snapshot_id": snapshot_id, "profile_version_id": profile_version_id, "counts": counts}
 
 
+def load_stream(conn: psycopg.Connection, api: dict, run_id: int) -> dict:
+    """Inserta idempotentemente las observaciones liberadas desde el corte inicial."""
+    observations = api["observations"]
+    with conn.transaction(), conn.cursor() as cur:
+        cur.execute(
+            "select last_observed_at from pulso.ingestion_cursors where source = 'stream_observations'"
+        )
+        previous = cur.fetchone()
+        last_observed_at = previous[0] if previous else None
+        if not observations.empty:
+            observations = observations.copy()
+            observations["observed_at"] = pd.to_datetime(observations["observed_at"], utc=True)
+            if last_observed_at is not None:
+                observations = observations[observations["observed_at"] > pd.Timestamp(last_observed_at)]
+            observations["station_id"] = observations["station_id"].astype("string")
+
+        if observations.empty:
+            cur.execute(
+                """
+                update pulso.ingestion_runs
+                set status = 'success', finished_at = now(), cursor_out = %s,
+                    rows_received = 0, rows_inserted = 0, rows_updated = 0
+                where run_id = %s
+                """,
+                (api["cursor_out"], run_id),
+            )
+            return {"counts": {"observations": (0, 0)}}
+
+        counts = {
+            "observations": upsert(
+                cur,
+                "observations",
+                ["station_id", "observed_at", "demand", "ingestion_run_id"],
+                rows(observations.assign(ingestion_run_id=run_id), ["station_id", "observed_at", "demand", "ingestion_run_id"]),
+                ["station_id", "observed_at"],
+                ["demand"],
+            )
+        }
+        max_observed_at = max(observations["observed_at"], key=pd.Timestamp)
+        cur.execute(
+            """
+            insert into pulso.ingestion_cursors (source, cursor, last_observed_at, last_run_id, updated_at)
+            values ('stream_observations', %s, %s, %s, now())
+            on conflict (source) do update
+            set cursor = excluded.cursor,
+                last_observed_at = greatest(pulso.ingestion_cursors.last_observed_at, excluded.last_observed_at),
+                last_run_id = excluded.last_run_id, updated_at = now()
+            """,
+            (api["cursor_out"], max_observed_at, run_id),
+        )
+        received = len(observations)
+        cur.execute(
+            """
+            update pulso.ingestion_runs
+            set status = 'success', finished_at = now(), cursor_out = %s, max_observed_at = %s,
+                rows_received = %s, rows_inserted = %s, rows_updated = %s
+            where run_id = %s
+            """,
+            (api["cursor_out"], max_observed_at, received, counts["observations"][0], counts["observations"][1], run_id),
+        )
+    return {"counts": counts}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--mlflow-run-id", help="run de MLflow del EDA que documenta el perfil base")
+    parser.add_argument("--stream", action="store_true", help="ingesta las observaciones liberadas por el reloj competitivo")
     args = parser.parse_args()
     load_dotenv()
     database_url = os.environ.get("DATABASE_URL")
@@ -281,17 +371,22 @@ def main() -> None:
         raise SystemExit("Falta DATABASE_URL (en .env o en el entorno).")
 
     with psycopg.connect(database_url, autocommit=True) as conn:
-        with tempfile.TemporaryDirectory() as tmp:
-            api = fetch_api(Path(tmp))
+        if args.stream:
+            api = fetch_stream()
+            source = "stream_observations"
+        else:
+            with tempfile.TemporaryDirectory() as tmp:
+                api = fetch_api(Path(tmp))
+            source = "bootstrap_download"
         run_id = conn.execute(
             """
             insert into pulso.ingestion_runs (source, status, api_version, server_time, git_commit, github_run_id)
-            values ('bootstrap_download', 'running', %s, %s, %s, %s) returning run_id
+            values (%s, 'running', %s, %s, %s, %s) returning run_id
             """,
-            (api["meta"]["api_version"], api["server_time"], git_commit(), os.getenv("GITHUB_RUN_ID")),
+            (source, api["meta"]["api_version"], api["server_time"], git_commit(), os.getenv("GITHUB_RUN_ID")),
         ).fetchone()[0]
         try:
-            result = load(conn, api, run_id, args.mlflow_run_id)
+            result = load_stream(conn, api, run_id) if args.stream else load(conn, api, run_id, args.mlflow_run_id)
         except Exception as exc:
             conn.execute(
                 "update pulso.ingestion_runs set status = 'failed', finished_at = now(), error_message = %s where run_id = %s",
@@ -299,7 +394,10 @@ def main() -> None:
             )
             raise
 
-    print(f"ingestion_run {run_id} · snapshot {result['snapshot_id']} · profile_version {result['profile_version_id']}")
+    details = f"ingestion_run {run_id}"
+    if not args.stream:
+        details += f" · snapshot {result['snapshot_id']} · profile_version {result['profile_version_id']}"
+    print(details)
     for table, (inserted, updated) in result["counts"].items():
         print(f"  {table:<18} insertadas {inserted:>6}   actualizadas {updated:>6}")
 
