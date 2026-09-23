@@ -108,6 +108,28 @@ def submit(model_dir: Path) -> dict[str, Any]:
         cycle_response.raise_for_status()
         cycle = cycle_response.json()
 
+    if cycle.get("state") != "open":
+        return {"skipped": True, "reason": "no hay ciclo abierto", "cycle_id": cycle.get("cycle_id")}
+
+    with psycopg.connect(database_url) as connection:
+        previous = connection.execute(
+            """
+            select s.api_submission_id
+            from pulso.submissions s
+            join pulso.forecast_runs r using (client_run_id)
+            where r.cycle_id = %s and s.status = 'accepted'
+            order by s.submitted_at desc limit 1
+            """,
+            (cycle["cycle_id"],),
+        ).fetchone()
+    if previous:
+        return {
+            "skipped": True,
+            "reason": "el ciclo ya tiene una submission aceptada",
+            "cycle_id": cycle["cycle_id"],
+            "submission_id": previous[0],
+        }
+
     with psycopg.connect(database_url) as connection:
         context = pd.read_sql("select observed_at, rain_forecast from pulso.context order by observed_at", connection)
     payload, predictions = make_payload(
@@ -197,6 +219,12 @@ def submit(model_dir: Path) -> dict[str, Any]:
                    where client_run_id = %s""",
                 ("success" if status == "accepted" else "failed", error, payload["client_run_id"]),
             )
+            if status == "accepted":
+                cursor.execute("update pulso.model_versions set status = 'retired', retired_at = now() where status = 'active'")
+                cursor.execute(
+                    "update pulso.model_versions set status = 'active', promoted_at = now() where model_version = %s",
+                    (manifest["model_version"],),
+                )
     if status != "accepted":
         raise RuntimeError(f"submission falló: {error}")
     return {"client_run_id": payload["client_run_id"], "idempotency_key": idempotency_key, "response": response_json, "predictions": len(payload["predictions"])}

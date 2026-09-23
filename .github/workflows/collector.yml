@@ -1,4 +1,4 @@
-name: pulso-transmi-collector
+name: pulso-transmi-pipeline
 
 on:
   schedule:
@@ -36,3 +36,16 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GITHUB_RUN_ID: ${{ github.run_id }}
         run: python pipeline/bootstrap_supabase.py --stream
+
+      - name: Infer and submit the open forecast cycle
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PULSO_API_KEY: ${{ secrets.PULSO_API_KEY }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: python pipeline/run_inference.py
+
+      - name: Monitor performance and leaderboard
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PULSO_API_KEY: ${{ secrets.PULSO_API_KEY }}
+        run: python pipeline/monitor_performance.py
