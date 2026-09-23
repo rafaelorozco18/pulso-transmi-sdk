@@ -11,7 +11,7 @@ from pathlib import Path
 import pandas as pd
 import psycopg
 
-from pipeline.bootstrap_supabase import ROOT, load_dotenv
+from bootstrap_supabase import ROOT, load_dotenv
 from pulso_transmi import PulsoTransmiClient
 from pulso_transmi.submission import submit
 from pulso_transmi.training import train_and_log

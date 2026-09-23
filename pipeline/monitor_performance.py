@@ -8,7 +8,7 @@ import httpx
 import psycopg
 from psycopg.types.json import Jsonb
 
-from pipeline.bootstrap_supabase import load_dotenv
+from bootstrap_supabase import load_dotenv
 from pulso_transmi.client import DEFAULT_BASE_URL
 
 ACCURACY_THRESHOLD = 85.0
