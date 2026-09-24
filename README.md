@@ -113,7 +113,7 @@ El repositorio de cada equipo debe dejar trazabilidad de:
 
 ## Pipeline MLOps automático
 
-La API abre un ciclo cada 30 minutos reales, lo deja abierto unos 25 minutos y
+La API abre un ciclo por cada hora virtual en punto (una vez por hora real), lo deja abierto unos 25 minutos y
 pide los 4 slots siguientes al `data_cutoff` (15, 30, 45 y 60 minutos) para las
 12 estaciones. Un cron horario pierde la mayoría de ciclos, y el leaderboard
 cuenta como error total cada ciclo no enviado. Por eso el pipeline corre como

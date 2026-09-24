@@ -25,8 +25,6 @@ from psycopg.types.json import Jsonb
 from common import Api, Skip, connect, latest_observed_at, load_active, load_config, read_frame, stage
 from pulso_transmi.forecasting import official_accuracy
 
-CYCLE_EVERY = pd.Timedelta(minutes=30)
-
 
 def own_leaderboard_rows(api: Api) -> dict[str, Any]:
     try:
@@ -41,7 +39,9 @@ def own_leaderboard_rows(api: Api) -> dict[str, Any]:
 
 
 def run(conn: psycopg.Connection, api: Api) -> dict[str, Any]:
-    cfg = load_config()["performance"]
+    config = load_config()
+    cfg = config["performance"]
+    cycle_every = pd.Timedelta(minutes=config["schedule"]["cycle_every_minutes"])
     with stage(conn, "performance") as details:
         cutoff = latest_observed_at(conn)
         if cutoff is None:
@@ -70,7 +70,7 @@ def run(conn: psycopg.Connection, api: Api) -> dict[str, Any]:
             errors[column] = pd.to_numeric(errors[column])
         score = official_accuracy(errors)
 
-        resolved = pd.date_range(start.ceil(CYCLE_EVERY), cutoff - pd.Timedelta(hours=1), freq=CYCLE_EVERY)
+        resolved = pd.date_range(start.ceil(cycle_every), cutoff - pd.Timedelta(hours=1), freq=cycle_every)
         submitted = conn.execute(
             """select count(distinct r.cycle_id) from pulso.forecast_runs r join pulso.submissions s using (client_run_id)
                where s.status = 'accepted' and r.data_cutoff >= %s and r.data_cutoff <= %s""",

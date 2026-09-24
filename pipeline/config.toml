@@ -4,8 +4,10 @@
 
 [schedule]
 # El vigilante consulta /v1/forecast-cycles/current con esta frecuencia (s).
-# Hoy la API abre un ciclo cada 30 min reales y lo deja abierto ~25 min.
+# Hoy el reloj avanza 30 min virtuales cada 30 min reales, pero solo abre ciclo
+# en cada hora virtual en punto (uno por hora real), abierto ~25 min.
 poll_seconds = 45
+cycle_every_minutes = 60   # cadencia virtual de ciclos (para medir cobertura)
 # Duración de cada job de GitHub Actions; debe quedar bajo el límite de 360 min.
 watch_minutes = 330
 # No se intenta un POST si faltan menos de estos segundos para el cierre.
