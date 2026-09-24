@@ -111,22 +111,77 @@ El repositorio de cada equipo debe dejar trazabilidad de:
 - momento y razón de cada reentrenamiento;
 - errores de ingesta o inferencia.
 
-## Colector horario de datos competitivos
+## Pipeline MLOps automático
 
-Los datos nuevos no se añaden al corte inicial de `/v1/observations`: se
-publican en `/v1/stream/observations` conforme avanza el reloj virtual. El
-colector idempotente los inserta en Supabase y conserva `last_observed_at` en
-`pulso.ingestion_cursors`:
+La API abre un ciclo cada 30 minutos reales, lo deja abierto unos 25 minutos y
+pide los 4 slots siguientes al `data_cutoff` (15, 30, 45 y 60 minutos) para las
+12 estaciones. Un cron horario pierde la mayoría de ciclos, y el leaderboard
+cuenta como error total cada ciclo no enviado. Por eso el pipeline corre como
+un **vigilante** que sondea la API y, en cada ciclo nuevo, encadena cuatro
+etapas idempotentes:
 
-```bash
-python pipeline/bootstrap_supabase.py --stream
+```text
+API ──GET──▶ 1. colector ──▶ PostgreSQL (Supabase, esquema pulso)
+                                │
+     ┌──────────────────────────┘
+     ▼
+2. inferencia: modelo campeón (pulso.model_artifacts) ──POST /v1/submissions──▶ API
+     │
+     ▼ (la demanda real llega en los ciclos siguientes)
+3. desempeño: accuracy oficial rolling, cobertura, drift, leaderboard
+     │
+     ▼ (programado cada 24 h virtuales o por alerta de drift)
+4. reentrenamiento: recetas candidatas vs. campeón en ciclos simulados → promover o conservar
 ```
 
-El workflow [`.github/workflows/collector.yml`](.github/workflows/collector.yml)
-lo ejecuta cada hora a los cinco minutos. Antes de activarlo en GitHub, configura
-el secret `DATABASE_URL`; `PULSO_API_URL` puede configurarse como variable de
-repositorio y, si se omite, se usa la URL pública por defecto. Las ejecuciones
-simultáneas se serializan para que no compitan por el mismo cursor.
+| Etapa | Archivo | Garantías |
+|---|---|---|
+| Colector | [`pipeline/collector.py`](pipeline/collector.py) | valida esquema, dominio y duplicados; upsert por `(station_id, observed_at)`; revisiones auditadas |
+| Inferencia | [`pipeline/inference.py`](pipeline/inference.py) | una submission aceptada por ciclo; se persiste `pending` antes del POST y se reintenta con la misma `Idempotency-Key`; cada predicción guarda `model_version` y commit |
+| Desempeño | [`pipeline/performance.py`](pipeline/performance.py) | `performance_snapshots` (global, por estación y por horizonte); `drift_signals`: `wape_rolling`, `residual_bias` y `data_quality` |
+| Reentrenamiento | [`pipeline/retraining.py`](pipeline/retraining.py) | backtest sin fuga; solo promueve si el candidato supera al campeón por `min_gain`; cada decisión queda en `retraining_decisions` |
+| Orquestador | [`pipeline/watch.py`](pipeline/watch.py) | sondea cada `poll_seconds`; un error no detiene el bucle; resumen en el job de Actions |
+
+Las frecuencias, umbrales y recetas están en
+[`pipeline/config.toml`](pipeline/config.toml), no en el código.
+[`pipeline.yml`](.github/workflows/pipeline.yml) corre el vigilante unas 5,5 h
+y luego se relanza a sí mismo con `workflow_dispatch`. El cron horario solo
+reinicia la cadena si se corta. Requiere los secrets `DATABASE_URL` y
+`PULSO_API_KEY`.
+
+```bash
+python pipeline/retraining.py        # crea el primer campeón (o --force para evaluar)
+python pipeline/watch.py --once      # una pasada completa en local
+python pipeline/sync_mlflow.py       # espeja modelos, decisiones y monitoreo en MLflow
+mlflow ui --backend-store-uri sqlite:///mlflow.db
+```
+
+### Modelo en producción
+
+`AdaptiveProfileForecaster` ([`forecasting.py`](src/pulso_transmi/forecasting.py))
+combina el perfil log-lineal por estación con una corrección de nivel: la media
+de `log(real / perfil)` en los últimos 4 slots, amortiguada por `0.8^h` según el
+horizonte. La API no publica contexto después del corte inicial, así que para
+predecir se usan lluvia y evento neutros; la corrección absorbe eventos, lluvia
+y cambios de nivel. En los ciclos simulados sobre el stream de la competencia:
+
+| Modelo | Accuracy |
+|---|---:|
+| Persistencia (último valor) | 73,79 |
+| Perfil log-lineal (anterior) | 86,16 |
+| Perfil + corrección de nivel | **86,90** |
+
+La inferencia usa la misma función que el backtest (hay un test que lo
+verifica), así que la accuracy de validación y la del leaderboard miden lo mismo.
+
+### MLflow
+
+Los runners de Actions son efímeros, así que Supabase es la fuente de verdad
+de modelos (joblib en `pulso.model_artifacts`), decisiones y desempeño.
+`sync_mlflow.py` lo replica en MLflow en tres experimentos
+(`pulso-transmi-models`, `pulso-transmi-retraining` y
+`pulso-transmi-monitoring`) y en el Model Registry `pulso-transmi-forecaster`,
+donde el alias `champion` apunta al modelo activo.
 
 ## GitHub Actions
 
