@@ -1,15 +1,19 @@
-"""Envía la primera predicción auditada del modelo versionado en MLflow."""
+"""Envía la predicción del ciclo abierto con el modelo campeón (una pasada del pipeline).
+
+Equivale a ``python pipeline/watch.py --once``: colector → inferencia (POST) →
+desempeño → reentrenamiento. Si aún no existe un campeón, créalo antes con
+``python pipeline/retraining.py``.
+"""
 
 from __future__ import annotations
 
+import runpy
+import sys
 from pathlib import Path
 
-from pulso_transmi.submission import submit
-
-
-MODEL_DIR = Path("artifacts/models/log-linear-profile-20260918T222118Z-7fd6363")
-
+PIPELINE = Path(__file__).resolve().parents[1] / "pipeline"
 
 if __name__ == "__main__":
-    result = submit(MODEL_DIR)
-    print(f"Envío aceptado: {result['client_run_id']} ({result['predictions']} predicciones)")
+    sys.path.insert(0, str(PIPELINE))
+    sys.argv = ["watch.py", "--once"]
+    runpy.run_path(str(PIPELINE / "watch.py"), run_name="__main__")

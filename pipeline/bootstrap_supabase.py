@@ -299,18 +299,13 @@ def load(conn: psycopg.Connection, api: dict, run_id: int, mlflow_run_id: str | 
 
 def load_stream(conn: psycopg.Connection, api: dict, run_id: int) -> dict:
     """Inserta idempotentemente las observaciones liberadas desde el corte inicial."""
+    # Se re-sincroniza todo el stream (es pequeño): el upsert solo escribe filas
+    # nuevas o cambiadas, y una revisión de la API queda en observation_revisions.
     observations = api["observations"]
     with conn.transaction(), conn.cursor() as cur:
-        cur.execute(
-            "select last_observed_at from pulso.ingestion_cursors where source = 'stream_observations'"
-        )
-        previous = cur.fetchone()
-        last_observed_at = previous[0] if previous else None
         if not observations.empty:
             observations = observations.copy()
             observations["observed_at"] = pd.to_datetime(observations["observed_at"], utc=True)
-            if last_observed_at is not None:
-                observations = observations[observations["observed_at"] > pd.Timestamp(last_observed_at)]
             observations["station_id"] = observations["station_id"].astype("string")
 
         if observations.empty:

@@ -1,0 +1,47 @@
+# Configuración del pipeline MLOps. Cambiar frecuencias o umbrales aquí no
+# requiere tocar código. Las horas "virtuales" se miden con el reloj de la
+# competencia (data_cutoff), no con la hora real.
+
+[schedule]
+# El vigilante consulta /v1/forecast-cycles/current con esta frecuencia (s).
+# Hoy la API abre un ciclo cada 30 min reales y lo deja abierto ~25 min.
+poll_seconds = 45
+# Duración de cada job de GitHub Actions; debe quedar bajo el límite de 360 min.
+watch_minutes = 330
+# No se intenta un POST si faltan menos de estos segundos para el cierre.
+submit_margin_seconds = 20
+
+[model]
+# Receta del forecaster adaptativo (ver src/pulso_transmi/forecasting.py).
+lookback_slots = 4
+decay = 0.8
+max_abs_log_ratio = 1.0
+train_half_life_days = 14
+
+[performance]
+window_hours = 24          # ventana rolling (virtual) para accuracy y drift
+accuracy_alert = 82.0      # alerta si la accuracy rolling cae bajo este valor
+bias_alert = 0.10          # alerta si |log(real/perfil)| medio de una estación lo supera
+bias_alert_stations = 2    # estaciones en alerta de sesgo necesarias para disparar drift
+min_predictions = 96       # evaluaciones mínimas antes de confiar en la señal
+
+[retraining]
+every_hours = 24           # reentrenamiento programado (horas virtuales)
+drift_cooldown_hours = 6   # espera mínima entre reentrenamientos por drift
+eval_hours = 24            # ventana de backtest por ciclos simulados
+min_gain = 0.05            # puntos de accuracy que el candidato debe ganar
+min_accuracy = 70.0        # piso absoluto para promover
+
+# Recetas candidatas que compiten en cada reentrenamiento. Con drift, las de
+# memoria corta se adaptan más rápido; sin drift, gana la de memoria larga.
+[[retraining.candidates]]
+name = "hl14"
+train_half_life_days = 14
+
+[[retraining.candidates]]
+name = "hl5"
+train_half_life_days = 5
+
+[[retraining.candidates]]
+name = "win7"
+train_window_days = 7

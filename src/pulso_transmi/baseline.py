@@ -53,7 +53,7 @@ class LogLinearProfileModel:
 
     models: dict[str, object] = field(default_factory=dict, init=False)
 
-    def fit(self, frame: pd.DataFrame) -> "LogLinearProfileModel":
+    def fit(self, frame: pd.DataFrame, sample_weight: pd.Series | None = None) -> "LogLinearProfileModel":
         if "demand" not in frame:
             raise ValueError("fit requiere la columna demand")
         if (frame["demand"] <= 0).any():
@@ -74,7 +74,8 @@ class LogLinearProfileModel:
             model = Pipeline(
                 [("features", preprocessor), ("regression", LinearRegression())]
             )
-            model.fit(features.loc[indices], target.loc[indices])
+            fit_params = {} if sample_weight is None else {"regression__sample_weight": sample_weight.loc[indices].to_numpy()}
+            model.fit(features.loc[indices], target.loc[indices], **fit_params)
             self.models[str(station_id)] = model
         return self
 
