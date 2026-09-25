@@ -1,0 +1,6 @@
+# El despliegue de Vercel solo necesita el dashboard; nunca sube .env ni datos.
+/*
+!/dashboard
+/dashboard/node_modules
+/dashboard/.next
+/dashboard/.env*

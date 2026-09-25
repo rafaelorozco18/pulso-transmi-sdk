@@ -201,6 +201,17 @@ las dos plataformas reemplaza el repositorio ni GitHub Actions.
 Consulta [docs/student-project.md](docs/student-project.md) para el flujo completo
 y los entregables.
 
+### Dashboard de monitoreo (bono)
+
+**https://pulso-transmi-dashboard-lilac.vercel.app** · código en [`dashboard/`](dashboard/)
+
+Next.js en Vercel que lee en vivo lo que el pipeline escribe en Supabase: drift
+por estación (sesgo de nivel, WAPE rolling, calidad de datos) y la respuesta del
+reentrenamiento, accuracy oficial y puesto en el leaderboard, real vs. predicción,
+cobertura de ciclos, versiones del modelo y salud de cada etapa. Consulta el
+servidor con el rol de solo lectura `dashboard_reader`, que solo ve vistas curadas
+del esquema `dashboard`; ninguna clave llega al navegador.
+
 ## Métrica
 
 La referencia actual es:

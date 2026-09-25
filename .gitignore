@@ -14,3 +14,5 @@ data/
 mlflow.db
 mlruns/
 mlartifacts/
+.vercel
+.env.local
