@@ -138,7 +138,7 @@ API ──GET──▶ 1. colector ──▶ PostgreSQL (Supabase, esquema pulso
 |---|---|---|
 | Colector | [`pipeline/collector.py`](pipeline/collector.py) | valida esquema, dominio y duplicados; upsert por `(station_id, observed_at)`; revisiones auditadas |
 | Inferencia | [`pipeline/inference.py`](pipeline/inference.py) | una submission aceptada por ciclo; se persiste `pending` antes del POST y se reintenta con la misma `Idempotency-Key`; cada predicción guarda `model_version` y commit |
-| Desempeño | [`pipeline/performance.py`](pipeline/performance.py) | `performance_snapshots` (global, por estación y por horizonte); `drift_signals`: `wape_rolling`, `residual_bias` y `data_quality` |
+| Desempeño | [`pipeline/performance.py`](pipeline/performance.py) + [`drift.py`](pipeline/drift.py) | `performance_snapshots` (global, por estación y por horizonte) y leaderboard completo; `drift_signals`: desempeño (`wape_rolling`), concepto (`residual_bias`, `profile_shape`), datos (`demand_psi` con test KS) y calidad (`data_quality`) |
 | Reentrenamiento | [`pipeline/retraining.py`](pipeline/retraining.py) | backtest sin fuga; solo promueve si el candidato supera al campeón por `min_gain`; cada decisión queda en `retraining_decisions` |
 | Orquestador | [`pipeline/watch.py`](pipeline/watch.py) | sondea cada `poll_seconds`; un error no detiene el bucle; resumen en el job de Actions |
 
@@ -148,6 +148,25 @@ Las frecuencias, umbrales y recetas están en
 y luego se relanza a sí mismo con `workflow_dispatch`. El cron horario solo
 reinicia la cadena si se corta. Requiere los secrets `DATABASE_URL` y
 `PULSO_API_KEY`.
+
+### Drift
+
+Cada corte se evalúa con una ventana rolling de 24 h virtuales frente al campeón:
+
+| Tipo | Señal | Qué mide | Alerta |
+|---|---|---|---|
+| Datos | `demand_psi` | PSI de log(demanda) frente a los últimos 14 días que vio el campeón, en las mismas horas y tipo de día; KS de dos muestras en `details` | PSI > 0,25 |
+| Concepto | `residual_bias` | media de log(real / perfil) por estación: cambio de nivel | \|sesgo\| > 0,10 |
+| Concepto | `profile_shape` | distancia de variación total entre la forma horaria real y la del perfil | > 0,10 |
+| Desempeño | `wape_rolling` | métrica oficial sobre lo enviado | accuracy < 82 |
+| Datos | `data_quality` | slots faltantes | cualquier hueco |
+
+Dos o más estaciones en alerta en una señal por estación, o la accuracy bajo el
+umbral, disparan la evaluación de reentrenamiento (con 6 h de cooldown). Los
+umbrales se calibraron sobre el historial: el PSI de estaciones estables ronda
+0,1 por ruido de muestreo y la distancia de forma, 0,04.
+`python pipeline/backfill_drift.py` recalcula las señales de datos para cortes
+anteriores a su introducción.
 
 ```bash
 python pipeline/retraining.py        # crea el primer campeón (o --force para evaluar)

@@ -23,6 +23,8 @@
   --div-neg: #2a78d6;
   --div-mid: #f0efec;
   --div-pos: #e34948;
+  --seq-lo: #e4eefb;
+  --seq-hi: #104281;
 
   --good: #0ca30c;
   --good-ink: #006300;
@@ -58,6 +60,8 @@
     --div-neg: #3987e5;
     --div-mid: #383835;
     --div-pos: #e66767;
+    --seq-lo: #1f2733;
+    --seq-hi: #86b6ef;
     --good-ink: #0ca30c;
     --warning-ink: #fab219;
     --critical-ink: #e66767;
@@ -84,6 +88,8 @@
   --div-neg: #3987e5;
   --div-mid: #383835;
   --div-pos: #e66767;
+  --seq-lo: #1f2733;
+  --seq-hi: #86b6ef;
   --good-ink: #0ca30c;
   --warning-ink: #fab219;
   --critical-ink: #e66767;
@@ -287,6 +293,10 @@ code,
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.grid-5 {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
 .grid-3 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -304,7 +314,14 @@ code,
   gap: 16px;
 }
 
+@media (max-width: 1180px) {
+  .grid-5 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 1000px) {
+  .grid-5,
   .grid-4 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -318,6 +335,9 @@ code,
 }
 
 @media (max-width: 560px) {
+  .grid-5 {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .shell,
   .topbar-inner {
     padding-left: 16px;
@@ -802,4 +822,13 @@ th.num {
 
 .table-wrap table {
   min-width: 560px;
+}
+
+tr.me td {
+  background: color-mix(in oklab, var(--series-1) 10%, transparent);
+  font-weight: 600;
+}
+
+.cell-alert {
+  font-weight: 600;
 }

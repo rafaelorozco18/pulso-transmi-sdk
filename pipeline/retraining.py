@@ -80,7 +80,8 @@ def run(conn: psycopg.Connection, *, drift: bool = False, force: bool = False, d
         champion = load_active(conn)
         trigger = trigger_for(conn, cfg, champion, cutoff, drift, force)
         if trigger is None:
-            raise Skip("sin disparador: campeón vigente y sin drift")
+            raise Skip(f"drift en cooldown ({cfg['drift_cooldown_hours']} h desde la última evaluación)" if drift
+                       else "sin disparador: campeón vigente y sin drift")
         details["trigger"] = trigger
 
         data = training_frame(conn, cutoff)

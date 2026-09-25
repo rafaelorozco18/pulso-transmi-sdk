@@ -26,6 +26,12 @@ accuracy_alert = 82.0      # alerta si la accuracy rolling cae bajo este valor
 bias_alert = 0.10          # alerta si |log(real/perfil)| medio de una estación lo supera
 bias_alert_stations = 2    # estaciones en alerta de sesgo necesarias para disparar drift
 min_predictions = 96       # evaluaciones mínimas antes de confiar en la señal
+# Data drift (pipeline/drift.py): demanda de la ventana vs. la que vio el campeón.
+reference_days = 14        # días finales del entrenamiento del campeón usados como referencia
+psi_bins = 10              # deciles de log(demanda) de la referencia
+psi_alert = 0.25           # PSI > 0,25 = cambio mayor de distribución (0,10–0,25 moderado)
+shape_alert = 0.10         # distancia de variación total de la forma horaria (ruido base ≈ 0,04)
+data_alert_stations = 2    # estaciones en alerta necesarias para disparar drift
 
 [retraining]
 every_hours = 24           # reentrenamiento programado (horas virtuales)

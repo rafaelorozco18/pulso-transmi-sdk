@@ -330,3 +330,34 @@ export async function getRecentRuns(): Promise<RunRow[]> {
     github_run_id: row.github_run_id as string | null,
   }));
 }
+
+// ---------------------------------------------------------------------------
+// Leaderboard (anonimizado en la vista: solo se conoce el nombre propio)
+// ---------------------------------------------------------------------------
+
+export type BoardRow = {
+  rank: number;
+  kind: string;
+  accuracy: number;
+  coverage: number;
+  is_me: boolean;
+  display_name: string | null;
+};
+
+export async function getLeaderboard(window: "rolling_24h" | "cumulative"): Promise<{ fetched_at: string | null; rows: BoardRow[] }> {
+  const rows = await query<Raw>(
+    "select fetched_at, rank, kind, accuracy, coverage, is_me, display_name from dashboard.leaderboard where window_name = $1 order by rank, accuracy desc",
+    [window],
+  );
+  return {
+    fetched_at: rows.length ? iso(rows[0].fetched_at as Date) : null,
+    rows: rows.map((row) => ({
+      rank: Number(row.rank),
+      kind: row.kind as string,
+      accuracy: row.accuracy as number,
+      coverage: row.coverage as number,
+      is_me: Boolean(row.is_me),
+      display_name: row.display_name as string | null,
+    })),
+  };
+}

@@ -229,22 +229,23 @@ export function WapeTrend({ data, threshold }: { data: WapePoint[]; threshold: n
 // Drift: estaciones con sesgo en alerta por corte
 // ---------------------------------------------------------------------------
 
-export type AlertCountPoint = { ts: number; count: number; stations: string[]; decision?: string };
+export type AlertCountPoint = { ts: number; bias: number; psi: number | null; stations: string[]; psiStations: string[]; decision?: string };
 
 export function AlertCountBars({ data, trigger }: { data: AlertCountPoint[]; trigger: number }) {
   const ts = data.map((d) => d.ts);
-  const max = Math.max(trigger + 1, ...data.map((d) => d.count));
+  const max = Math.max(trigger + 1, ...data.map((d) => Math.max(d.bias, d.psi ?? 0)));
   return (
     <>
       <Legend
         items={[
-          { label: "Estaciones con sesgo en alerta", color: "var(--series-1)" },
+          { label: "Sesgo de nivel (concept)", color: "var(--series-1)" },
+          { label: "PSI de la demanda (data)", color: "var(--series-2)" },
           { label: `Disparo de drift (≥ ${trigger})`, color: "var(--muted)", kind: "dash" },
         ]}
       />
-      <div style={{ height: 200, marginTop: 8 }}>
+      <div style={{ height: 220, marginTop: 8 }}>
         <ResponsiveContainer>
-          <BarChart data={data} margin={{ top: 8, right: 12, bottom: 0, left: 0 }} barCategoryGap={2}>
+          <BarChart data={data} margin={{ top: 8, right: 12, bottom: 0, left: 0 }} barCategoryGap={1} barGap={1}>
             <CartesianGrid vertical={false} stroke="var(--grid)" />
             <XAxis dataKey="ts" type="number" scale="time" domain={["dataMin - 1800000", "dataMax + 1800000"]} ticks={timeTicks(ts, tickHours(ts))} tickFormatter={fmtTick} tick={AXIS_TICK} axisLine={AXIS_LINE} tickLine={false} />
             <YAxis domain={[0, max]} allowDecimals={false} tick={AXIS_TICK} axisLine={false} tickLine={false} width={32} />
@@ -258,15 +259,18 @@ export function AlertCountBars({ data, trigger }: { data: AlertCountPoint[]; tri
                   <TipBox
                     title={`Corte ${fmtDateTime(p.ts)}`}
                     rows={[
-                      { label: "En alerta", value: `${p.count} de 12` },
-                      ...(p.stations.length ? [{ label: "Estaciones", value: p.stations.join(", ") }] : []),
+                      { label: "Sesgo en alerta", value: `${p.bias} de 12`, color: "var(--series-1)" },
+                      ...(p.stations.length ? [{ label: "", value: p.stations.join(", ") }] : []),
+                      { label: "PSI en alerta", value: p.psi == null ? "sin dato" : `${p.psi} de 12`, color: "var(--series-2)" },
+                      ...(p.psiStations.length ? [{ label: "", value: p.psiStations.join(", ") }] : []),
                       ...(p.decision ? [{ label: "Reentrenamiento", value: p.decision }] : []),
                     ]}
                   />
                 );
               }}
             />
-            <Bar dataKey="count" fill="var(--series-1)" radius={[4, 4, 0, 0]} maxBarSize={14} isAnimationActive={false} />
+            <Bar dataKey="bias" fill="var(--series-1)" radius={[3, 3, 0, 0]} maxBarSize={8} isAnimationActive={false} />
+            <Bar dataKey="psi" fill="var(--series-2)" radius={[3, 3, 0, 0]} maxBarSize={8} isAnimationActive={false} />
           </BarChart>
         </ResponsiveContainer>
       </div>

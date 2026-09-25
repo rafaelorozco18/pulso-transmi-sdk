@@ -2,7 +2,7 @@ import Link from "next/link";
 
 import { AccuracyTrend, type AccuracyPoint } from "@/components/charts";
 import { Badge, Card, Delta, Empty, RunStatusBadge, Tile } from "@/components/ui";
-import { getClock, getCycles, getDecisions, getDriftSignals, getModels, getSnapshots, getStageStatus, getStations } from "@/lib/data";
+import { getClock, getCycles, getDecisions, getDriftSignals, getLeaderboard, getModels, getSnapshots, getStageStatus, getStations, type BoardRow } from "@/lib/data";
 import { fmtAgo, fmtDateTime, fmtDuration, fmtNumber, shortStation, shortVersion, STAGE_LABEL, TRIGGER_LABEL } from "@/lib/format";
 
 const ACCURACY_ALERT = 82;
@@ -23,8 +23,38 @@ function stageDetail(stage: string, details: Record<string, unknown>): string {
   }
 }
 
+const BOARD_TOP = 8;
+
+function BoardTable({ rows }: { rows: BoardRow[] }) {
+  const me = rows.find((r) => r.is_me);
+  const shown = rows.slice(0, BOARD_TOP);
+  if (me && !shown.includes(me)) shown.push(me);
+  return (
+    <table>
+      <thead>
+        <tr>
+          <th className="num">#</th>
+          <th>Participante</th>
+          <th className="num">Accuracy</th>
+          <th className="num">Cobertura</th>
+        </tr>
+      </thead>
+      <tbody>
+        {shown.map((row, index) => (
+          <tr key={`${row.rank}-${index}`} className={row.is_me ? "me" : undefined}>
+            <td className="num">{row.rank}</td>
+            <td>{row.is_me ? `${row.display_name} (nosotros)` : row.kind === "student" ? "Otro participante" : `Referencia (${row.kind})`}</td>
+            <td className="num">{fmtNumber(row.accuracy, 2)}</td>
+            <td className="num">{fmtNumber(row.coverage * 100, 0)} %</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 export default async function OverviewPage() {
-  const [snapshots, stages, cycles, models, decisions, signals, stations, clock] = await Promise.all([
+  const [snapshots, stages, cycles, models, decisions, signals, stations, clock, boardRolling, boardCumulative] = await Promise.all([
     getSnapshots(),
     getStageStatus(),
     getCycles(),
@@ -33,6 +63,8 @@ export default async function OverviewPage() {
     getDriftSignals(),
     getStations(),
     getClock(),
+    getLeaderboard("rolling_24h"),
+    getLeaderboard("cumulative"),
   ]);
 
   const now = clock.now;
@@ -50,6 +82,9 @@ export default async function OverviewPage() {
   const biasAlerts = biasNow.filter((s) => s.is_alert);
   const wapeNow = signals.filter((s) => s.signal === "wape_rolling").at(-1);
   const dqNow = signals.filter((s) => s.signal === "data_quality").at(-1);
+  const lastPsiCut = signals.filter((s) => s.signal === "demand_psi").at(-1)?.window_end;
+  const psiAlerts = signals.filter((s) => s.signal === "demand_psi" && s.window_end === lastPsiCut && s.is_alert);
+  const driftStations = [...new Set([...biasAlerts, ...psiAlerts].map((s) => s.station_id!))];
 
   const trend: AccuracyPoint[] = snapshots.map((s) => ({
     ts: new Date(s.data_cutoff).getTime(),
@@ -110,11 +145,11 @@ export default async function OverviewPage() {
           meta={<>Ciclo no enviado = error total en el leaderboard</>}
         />
         <Tile
-          label="Drift de nivel"
-          value={biasAlerts.length}
-          unit=" / 12 estaciones"
-          badge={biasAlerts.length >= 2 ? <Badge tone="warning">Drift activo</Badge> : <Badge tone="good">Estable</Badge>}
-          meta={<>{biasAlerts.length ? biasAlerts.map((s) => names.get(s.station_id!)).join(", ") : "Ninguna estación fuera del umbral"}</>}
+          label="Estaciones con drift"
+          value={driftStations.length}
+          unit=" / 12"
+          badge={driftStations.length >= 2 ? <Badge tone="warning">Drift activo</Badge> : <Badge tone="good">Estable</Badge>}
+          meta={<>{driftStations.length ? driftStations.map((id) => names.get(id)).join(", ") : "Ninguna estación fuera de umbral"}</>}
         />
       </div>
 
@@ -227,7 +262,14 @@ export default async function OverviewPage() {
       </Card>
 
       <h2 className="section-title">Señales de drift en el último corte</h2>
-      <div className="grid grid-3">
+      <div className="grid grid-4">
+        <Tile
+          label="Datos · PSI de la demanda"
+          value={lastPsiCut ? psiAlerts.length : "—"}
+          unit={lastPsiCut ? " estaciones" : undefined}
+          badge={lastPsiCut ? psiAlerts.length >= 2 ? <Badge tone="warning">Dispara drift</Badge> : <Badge tone="good">Normal</Badge> : undefined}
+          meta={<>PSI &gt; 0,25 frente a la referencia del campeón</>}
+        />
         <Tile
           label="Desempeño · WAPE rolling"
           value={wapeNow ? fmtNumber(wapeNow.value, 3) : "—"}
@@ -239,7 +281,7 @@ export default async function OverviewPage() {
           value={biasAlerts.length}
           unit=" estaciones"
           badge={biasAlerts.length >= 2 ? <Badge tone="warning">Dispara drift</Badge> : <Badge tone="good">Normal</Badge>}
-          meta={<>|log(real/perfil)| &gt; 0,10 en ≥ 2 estaciones dispara reentrenamiento</>}
+          meta={<>|log(real/perfil)| &gt; 0,10; ≥ 2 estaciones disparan reentrenamiento</>}
         />
         <Tile
           label="Datos · calidad"
@@ -254,6 +296,17 @@ export default async function OverviewPage() {
           Ver el detalle del drift →
         </Link>
       </div>
+
+      <h2 className="section-title">Leaderboard de la competencia</h2>
+      <div className="grid grid-2">
+        <Card title="Rolling 24 h" sub={`Top ${BOARD_TOP} y nuestra posición · actualizado ${fmtAgo(boardRolling.fetched_at, now)}`}>
+          {boardRolling.rows.length ? <BoardTable rows={boardRolling.rows} /> : <Empty>Sin datos del leaderboard.</Empty>}
+        </Card>
+        <Card title="Acumulado" sub={`Top ${BOARD_TOP} y nuestra posición · actualizado ${fmtAgo(boardCumulative.fetched_at, now)}`}>
+          {boardCumulative.rows.length ? <BoardTable rows={boardCumulative.rows} /> : <Empty>Sin datos del leaderboard.</Empty>}
+        </Card>
+      </div>
+      <div className="card-foot">Los demás participantes se muestran de forma anónima: este dashboard es público.</div>
     </>
   );
 }

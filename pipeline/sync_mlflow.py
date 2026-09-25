@@ -11,7 +11,8 @@ idempotente, en el tracking de MLflow (por defecto ``sqlite:///mlflow.db``):
 - ``pulso-transmi-retraining``: un run por decisión (trigger, candidatos,
   campeón, promote/keep);
 - ``pulso-transmi-monitoring``: un run por versión servida con la serie de
-  accuracy rolling, cobertura y leaderboard (step = snapshot).
+  accuracy rolling, cobertura, leaderboard y drift (estaciones en alerta y
+  máximos de PSI, forma y sesgo por corte; step = snapshot).
 
     python pipeline/sync_mlflow.py
     mlflow ui --backend-store-uri sqlite:///mlflow.db
@@ -134,6 +135,21 @@ def sync_monitoring(conn, client: MlflowClient) -> int:
         """select snapshot_id, data_cutoff, model_version, accuracy, cycles_submitted, cycles_expected, n_predictions,
                   by_horizon, leaderboard from pulso.performance_snapshots order by snapshot_id"""
     ).fetchall()
+    drift = {
+        cutoff: values
+        for cutoff, *values in conn.execute(
+            """select window_end,
+                      count(*) filter (where signal = 'residual_bias' and is_alert),
+                      count(*) filter (where signal = 'demand_psi' and is_alert),
+                      count(*) filter (where signal = 'profile_shape' and is_alert),
+                      max(abs(value)) filter (where signal = 'residual_bias'),
+                      max(value) filter (where signal = 'demand_psi'),
+                      max(value) filter (where signal = 'profile_shape')
+               from pulso.drift_signals group by window_end"""
+        ).fetchall()
+    }
+    drift_names = ("drift_bias_alert_stations", "drift_psi_alert_stations", "drift_shape_alert_stations",
+                   "drift_bias_max_abs", "drift_psi_max", "drift_shape_max")
     logged = 0
     runs: dict[str, Any] = {}
     for snapshot_id, cutoff, version, accuracy, submitted, expected, n, by_horizon, board in rows:
@@ -156,6 +172,9 @@ def sync_monitoring(conn, client: MlflowClient) -> int:
             for field in ("accuracy", "coverage", "rank"):
                 if isinstance(row.get(field), (int, float)):
                     values[f"leaderboard_{window}_{field}"] = float(row[field])
+        for name, value in zip(drift_names, drift.get(cutoff, ())):
+            if value is not None:
+                values[name] = float(value)
         for name, value in values.items():
             client.log_metric(run.info.run_id, name, value, timestamp=ts, step=snapshot_id)
         client.set_tag(run.info.run_id, "last_snapshot_id", str(snapshot_id))

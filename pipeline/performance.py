@@ -10,7 +10,11 @@ Y en ``drift_signals``:
 - ``wape_rolling``: desempeño real de la red;
 - ``residual_bias``: log(real / perfil del campeón) medio por estación
   (cambio de nivel = concept drift que el perfil ya no explica);
-- ``data_quality``: slots faltantes en la ventana.
+- ``data_quality``: slots faltantes en la ventana;
+- ``demand_psi`` y ``profile_shape``: data drift de la demanda frente a la que
+  vio el campeón al entrenar (ver ``drift.py``).
+
+Además guarda el leaderboard completo en ``leaderboard_snapshots``.
 """
 
 from __future__ import annotations
@@ -23,19 +27,21 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from common import Api, Skip, connect, latest_observed_at, load_active, load_config, read_frame, stage
+from drift import data_drift_signals
 from pulso_transmi.forecasting import official_accuracy
 
 
-def own_leaderboard_rows(api: Api) -> dict[str, Any]:
+def leaderboards(api: Api) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Fila propia por ventana y tablas completas (para leaderboard_snapshots)."""
     try:
         name = api.me().get("display_name")
-        rows = {}
+        rows, boards = {}, {}
         for window in ("cumulative", "rolling_24h"):
-            board = api.leaderboard(window).get("data", [])
-            rows[window] = next((row for row in board if row.get("display_name") == name), None)
-        return rows
+            boards[window] = api.leaderboard(window)
+            rows[window] = next((row for row in boards[window].get("data", []) if row.get("display_name") == name), None)
+        return rows, boards
     except Exception as exc:  # el leaderboard no debe tumbar el monitoreo
-        return {"error": str(exc)[:300]}
+        return {"error": str(exc)[:300]}, {}
 
 
 def run(conn: psycopg.Connection, api: Api) -> dict[str, Any]:
@@ -110,7 +116,22 @@ def run(conn: psycopg.Connection, api: Api) -> dict[str, Any]:
         if len(biased) >= cfg["bias_alert_stations"]:
             alerts.append(f"sesgo de nivel en {len(biased)} estaciones: {', '.join(sorted(biased))}")
 
-        leaderboard = own_leaderboard_rows(api)
+        if champion is not None and not observed.empty:
+            reference = read_frame(
+                conn,
+                "select station_id, observed_at, demand from pulso.observations where observed_at > %s and observed_at <= %s",
+                (champion.training_data_end - pd.Timedelta(days=cfg["reference_days"]), champion.training_data_end),
+            )
+            reference["demand"] = pd.to_numeric(reference["demand"])
+            drift_rows = data_drift_signals(observed, reference, champion.forecaster.base_prediction, cfg)
+            signals += drift_rows
+            for signal, label in (("demand_psi", "data drift (PSI)"), ("profile_shape", "forma del perfil")):
+                flagged = sorted(station for station, name, _, _, alert, _ in drift_rows if name == signal and alert)
+                details[f"{signal}_alerts"] = len(flagged)
+                if len(flagged) >= cfg["data_alert_stations"]:
+                    alerts.append(f"{label} en {len(flagged)} estaciones: {', '.join(flagged)}")
+
+        leaderboard, boards = leaderboards(api)
         with conn.transaction(), conn.cursor() as cursor:
             cursor.execute(
                 """insert into pulso.performance_snapshots
@@ -125,6 +146,10 @@ def run(conn: psycopg.Connection, api: Api) -> dict[str, Any]:
                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 [(start, cutoff, station, signal, value, threshold, alert, model_version, Jsonb(extra))
                  for station, signal, value, threshold, alert, extra in signals],
+            )
+            cursor.executemany(
+                "insert into pulso.leaderboard_snapshots (window_name, payload) values (%s, %s)",
+                [(window, Jsonb(board)) for window, board in boards.items()],
             )
         details.update({
             "accuracy": None if score["accuracy"] is None else round(score["accuracy"], 2),

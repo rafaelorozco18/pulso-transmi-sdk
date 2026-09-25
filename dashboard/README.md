@@ -5,8 +5,8 @@ muestra, en vivo, lo que el pipeline de GitHub Actions escribe en Supabase:
 
 | Página | Qué muestra | Fuente |
 |---|---|---|
-| **Resumen** | accuracy oficial rolling 24 h y acumulada, puesto, cobertura de ciclos, modelo campeón, última ejecución de cada etapa | `performance_snapshots`, `cycle_coverage`, `pipeline_stage_status` |
-| **Drift** | sesgo de nivel por estación y corte (mapa de calor), sesgo actual, mapa de estaciones, alertas por corte, WAPE rolling, calidad de datos y la respuesta del pipeline | `drift_signals`, `retraining_decisions` |
+| **Resumen** | accuracy oficial rolling 24 h y acumulada, puesto, cobertura de ciclos, modelo campeón, última ejecución de cada etapa, señales de drift y leaderboard (anónimo salvo nuestra fila) | `performance_snapshots`, `cycle_coverage`, `pipeline_stage_status`, `leaderboard` |
+| **Drift** | matriz de drift por estación; concept drift (sesgo de nivel y forma horaria: mapas de calor, sesgo actual, mapa de estaciones); data drift (PSI y KS de la demanda, referencia vs. ventana actual por decil); drift de desempeño; alertas por corte y la respuesta del reentrenamiento | `drift_signals`, `retraining_decisions` |
 | **Desempeño** | real vs. predicción enviada por estación y horizonte, accuracy por horizonte y por estación (producción vs. validación), distribución del error | `prediction_errors`, `observations_recent` |
 | **Modelos y pipeline** | campeón vs. candidatos en cada reentrenamiento, historial de decisiones, versiones, salud de las etapas | `model_versions`, `retraining_decisions`, `pipeline_runs` |
 
