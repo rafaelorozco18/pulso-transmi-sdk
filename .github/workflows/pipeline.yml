@@ -1,6 +1,6 @@
 name: pulso-transmi-pipeline
 
-# Colector → inferencia (POST) → desempeño → reentrenamiento, en cada ciclo.
+# Colector → inferencia (POST) → desempeño y drift → reentrenamiento → MLflow, en cada ciclo.
 #
 # Los ciclos se abren cada ~30 min y cierran ~25 min después, y el cron de
 # GitHub se retrasa o se salta ejecuciones. Por eso el job no hace una pasada
@@ -40,6 +40,10 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           PULSO_API_KEY: ${{ secrets.PULSO_API_KEY }}
+          # MLflow en Supabase: tracking (rol mlflow_writer) y artefactos (Storage S3).
+          MLFLOW_DATABASE_URL: ${{ secrets.MLFLOW_DATABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           PYTHONWARNINGS: ignore
         run: python pipeline/watch.py

@@ -78,6 +78,7 @@ export const STAGE_LABEL: Record<string, string> = {
   inference: "Inferencia",
   performance: "Desempeño y drift",
   retraining: "Reentrenamiento",
+  tracking: "Versionado MLflow",
 };
 
 export const TRIGGER_LABEL: Record<string, string> = {
@@ -85,7 +86,7 @@ export const TRIGGER_LABEL: Record<string, string> = {
   scheduled: "Programado",
   drift: "Drift",
   manual: "Manual",
-  performance: "Desempeño",
+  performance: "Accuracy bajo umbral",
 };
 
 export const ARCHETYPE_LABEL: Record<string, string> = {
@@ -106,7 +107,7 @@ export const HORIZON_LABEL = (step: number | string) => `${Number(step) * 15} mi
 /** Versión legible: "hl14 · 24 sep 03:51". */
 export function shortVersion(version: string | null | undefined): string {
   if (!version) return "—";
-  const match = version.match(/^[a-z-]+?-(hl\d+|win\d+|default)-(\d{8}T\d{6}Z)/);
+  const match = version.match(/^[a-z-]+?-((?:hl|win)\d+(?:-a\d+)?|default)-(\d{8}T\d{6}Z)/);
   if (match) {
     const stamp = match[2];
     const date = `${stamp.slice(0, 4)}-${stamp.slice(4, 6)}-${stamp.slice(6, 8)}T${stamp.slice(9, 11)}:${stamp.slice(11, 13)}:00Z`;

@@ -2,12 +2,18 @@ import type { Metadata } from "next";
 
 import { DecisionChart, type DecisionPoint } from "@/components/charts";
 import { Badge, Card, Empty, RunStatusBadge, Tile } from "@/components/ui";
-import { getClock, getDecisions, getModels, getRecentRuns } from "@/lib/data";
-import { fmtAgo, fmtDateTime, fmtDuration, fmtNumber, shortVersion, STAGE_LABEL, TRIGGER_LABEL } from "@/lib/format";
+import { getClock, getDecisions, getMlflow, getModels, getRecentRuns } from "@/lib/data";
+import { fmtAgo, fmtDateTime, fmtDuration, fmtNumber, fmtSigned, shortVersion, STAGE_LABEL, TRIGGER_LABEL } from "@/lib/format";
 
 export const metadata: Metadata = { title: "Modelos y pipeline · Pulso TransMi" };
 
 const REPO_URL = "https://github.com/rafaelorozco18/pulso-transmi-sdk";
+
+function bestOf(candidates: Record<string, number>, stored: string | null): string | null {
+  if (stored && stored in candidates) return stored;
+  const entries = Object.entries(candidates);
+  return entries.length ? entries.reduce((a, b) => (b[1] > a[1] ? b : a))[0] : null;
+}
 
 function StatusTag({ status }: { status: string }) {
   if (status === "active") return <Badge tone="good">Activo</Badge>;
@@ -17,23 +23,32 @@ function StatusTag({ status }: { status: string }) {
 }
 
 export default async function ModelsPage() {
-  const [models, decisions, runs, clock] = await Promise.all([getModels(), getDecisions(), getRecentRuns(), getClock()]);
+  const [models, decisions, runs, clock, mlflow] = await Promise.all([getModels(), getDecisions(), getRecentRuns(), getClock(), getMlflow()]);
   const now = clock.now;
   const champion = models.find((m) => m.status === "active");
 
   const points: DecisionPoint[] = decisions
     .filter((d) => d.cutoff)
-    .map((d) => ({
-      ts: new Date(d.cutoff!).getTime(),
-      champion: d.champion_accuracy,
-      hl14: d.candidates.hl14,
-      hl5: d.candidates.hl5,
-      win7: d.candidates.win7,
-      decision: d.decision === "promote" ? "Promovido" : "Se conserva",
-      trigger: TRIGGER_LABEL[d.trigger] ?? d.trigger,
-    }));
+    .map((d) => {
+      const best = bestOf(d.candidates, d.best_candidate);
+      return {
+        ts: new Date(d.cutoff!).getTime(),
+        champion: d.champion_accuracy,
+        best: best ? d.candidates[best] : null,
+        bestName: best,
+        live: d.live_accuracy,
+        promoted: d.decision === "promote",
+        decision: d.decision === "promote" ? "Promovido" : "Se conserva",
+        trigger: TRIGGER_LABEL[d.trigger] ?? d.trigger,
+        candidates: d.candidates,
+      };
+    });
+  const latestDecision = decisions.at(-1);
+  const policy = [...decisions].reverse().find((d) => d.accuracy_below != null);
+  const recipes = Object.keys(latestDecision?.candidates ?? {});
+  const mlflowRun = new Map(mlflow.retraining.map((r) => [r.decision_id, r]));
 
-  const stages = ["collector", "inference", "performance", "retraining"];
+  const stages = ["collector", "inference", "performance", "retraining", "tracking"];
   const stats = stages.map((stage) => {
     const rows = runs.filter((r) => r.stage === stage);
     const durations = rows.map((r) => r.duration_s).filter((d): d is number => d != null).sort((a, b) => a - b);
@@ -56,8 +71,9 @@ export default async function ModelsPage() {
         <div>
           <h1>Modelos y pipeline</h1>
           <p>
-            Registro de versiones (el joblib vive en Supabase y se espeja en MLflow), cada decisión de reentrenamiento con sus candidatos, y la
-            salud de las ejecuciones de GitHub Actions en los últimos 7 días.
+            En cada ciclo (≈ cada hora) el pipeline mide la accuracy de lo enviado y el drift; si la accuracy cae bajo el umbral mínimo o hay
+            drift, reentrena todas las recetas candidatas, las valida contra el campeón sin fuga de datos y promueve la mejor si gana. Cada
+            decisión, candidato y versión queda versionado en MLflow.
           </p>
         </div>
       </div>
@@ -76,10 +92,10 @@ export default async function ModelsPage() {
       <div className="grid grid-3" style={{ marginTop: 16 }}>
         <Card
           className="span-2"
-          title="Campeón vs. candidatos en cada reentrenamiento"
-          sub="Accuracy en ciclos simulados sobre las últimas 24 h, sin fuga de datos. Un candidato solo reemplaza al campeón si lo supera por 0,05 puntos."
+          title="Accuracy en vivo y respuesta del reentrenamiento"
+          sub="Cuando la accuracy en vivo cae bajo el umbral, el reentrenamiento compara candidatos y campeón en ciclos simulados de las últimas 24 h (sin fuga). Un candidato solo reemplaza al campeón si lo supera por el margen mínimo."
         >
-          {points.length ? <DecisionChart data={points} /> : <Empty>Sin decisiones.</Empty>}
+          {points.length ? <DecisionChart data={points} threshold={policy?.accuracy_below ?? null} /> : <Empty>Sin decisiones.</Empty>}
         </Card>
         <Card title="Modelo en producción" sub="AdaptiveProfileForecaster">
           {champion ? (
@@ -109,6 +125,10 @@ export default async function ModelsPage() {
                     <td className="num">{String(hyper.decay ?? "—")}ʰ</td>
                   </tr>
                   <tr>
+                    <td>Ancla de nivel</td>
+                    <td className="num">{hyper.anchor_slots ? `${Number(hyper.anchor_slots) / 4} h` : "sin ancla"}</td>
+                  </tr>
+                  <tr>
                     <td>Validación</td>
                     <td className="num">{fmtNumber(champion.validation_metrics.accuracy, 2)}</td>
                   </tr>
@@ -129,7 +149,88 @@ export default async function ModelsPage() {
         </Card>
       </div>
 
-      <Card title="Historial de decisiones" sub="pulso.retraining_decisions · la más reciente primero" className="">
+      <div className="grid grid-2" style={{ marginTop: 16 }}>
+        <Card title="Política de reentrenamiento automático" sub="pipeline/config.toml · se aplica en cada ciclo de GitHub Actions">
+          <ul className="signal-list">
+            <li>
+              <b>Cuándo</b>
+              <span>
+                En cada ciclo (≈ cada hora): si la accuracy rolling 24 h de lo enviado cae bajo{" "}
+                <b>{policy?.accuracy_below != null ? fmtNumber(policy.accuracy_below, 1) : "el umbral"}</b>, si hay drift de datos, concepto o
+                desempeño, o si el campeón lleva 24 h sin evaluarse.
+              </span>
+            </li>
+            <li>
+              <b>Qué entrena</b>
+              <span>
+                {recipes.length} recetas candidatas ({recipes.join(", ")}): memoria del perfil (vida media o ventana) y ancla de nivel (a12 = 12 h,
+                a24 = 24 h) para absorber drift de tendencia.
+              </span>
+            </li>
+            <li>
+              <b>Cómo valida</b>
+              <span>
+                Cada receta se entrena solo con datos anteriores a la ventana de 24 h y se evalúa en ciclos simulados idénticos a los reales, con
+                la métrica oficial; el campeón se evalúa igual.
+              </span>
+            </li>
+            <li>
+              <b>Cuándo promueve</b>
+              <span>
+                Si el mejor candidato supera al campeón por {policy?.min_gain != null ? fmtNumber(policy.min_gain, 2) : "0,05"} puntos: se
+                re-entrena con todos los datos, se registra y el siguiente ciclo ya predice con él.
+              </span>
+            </li>
+          </ul>
+        </Card>
+        <Card title="MLflow" sub="Tracking y Model Registry en Supabase (esquema mlflow); artefactos en Supabase Storage">
+          <table>
+            <thead>
+              <tr>
+                <th>Experimento</th>
+                <th className="num">Runs</th>
+                <th className="num">Runs hijos</th>
+                <th>Último</th>
+              </tr>
+            </thead>
+            <tbody>
+              {mlflow.experiments.map((e) => (
+                <tr key={e.name}>
+                  <td className="mono">{e.name}</td>
+                  <td className="num">{e.runs}</td>
+                  <td className="num">{e.child_runs}</td>
+                  <td className="tabular">{fmtAgo(e.last_run_at, now)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="card-title" style={{ margin: "16px 0 8px" }}>
+            Model Registry · pulso-transmi-forecaster
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th className="num">v</th>
+                <th>Versión del modelo</th>
+                <th>Alias</th>
+                <th>Registrada</th>
+              </tr>
+            </thead>
+            <tbody>
+              {mlflow.registry.slice(0, 6).map((v) => (
+                <tr key={v.version} className={v.aliases.includes("champion") ? "me" : undefined}>
+                  <td className="num">{v.version}</td>
+                  <td>{shortVersion(v.model_version)}</td>
+                  <td>{v.aliases ? <Badge tone="good">{v.aliases}</Badge> : "—"}</td>
+                  <td className="tabular">{fmtDateTime(v.created_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      </div>
+
+      <Card title="Historial de decisiones" sub="pulso.retraining_decisions · la más reciente primero · cada una es un run en MLflow con un run hijo por candidato" className="">
         <div className="table-wrap">
           <table>
             <thead>
@@ -138,11 +239,12 @@ export default async function ModelsPage() {
                 <th>Corte</th>
                 <th>Disparador</th>
                 <th>Decisión</th>
+                <th className="num">En vivo</th>
                 <th className="num">Campeón</th>
-                <th className="num">hl14</th>
-                <th className="num">hl5</th>
-                <th className="num">win7</th>
+                <th>Mejor candidato</th>
+                <th className="num">Ganancia</th>
                 <th>Motivo</th>
+                <th>MLflow</th>
               </tr>
             </thead>
             <tbody>
@@ -156,13 +258,32 @@ export default async function ModelsPage() {
                   </td>
                   <td>{TRIGGER_LABEL[d.trigger] ?? d.trigger}</td>
                   <td>{d.decision === "promote" ? <Badge tone="good">Promovido</Badge> : <Badge tone="neutral">Se conserva</Badge>}</td>
+                  <td className="num">{fmtNumber(d.live_accuracy, 2)}</td>
                   <td className="num">{fmtNumber(d.champion_accuracy, 2)}</td>
-                  <td className="num">{fmtNumber(d.candidates.hl14, 2)}</td>
-                  <td className="num">{fmtNumber(d.candidates.hl5, 2)}</td>
-                  <td className="num">{fmtNumber(d.candidates.win7, 2)}</td>
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    {(() => {
+                      const best = bestOf(d.candidates, d.best_candidate);
+                      return best ? `${best} · ${fmtNumber(d.candidates[best], 2)}` : "—";
+                    })()}
+                  </td>
+                  <td className="num">
+                    {(() => {
+                      const best = bestOf(d.candidates, d.best_candidate);
+                      return best && d.champion_accuracy != null ? fmtSigned(d.candidates[best] - d.champion_accuracy, 2) : "—";
+                    })()}
+                  </td>
                   <td style={{ color: "var(--ink-2)", minWidth: 260 }}>
                     {d.reason}
                     {d.drift_alerts.length > 0 && <div className="card-sub">{d.drift_alerts.join(" · ")}</div>}
+                  </td>
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    {mlflowRun.has(d.decision_id) ? (
+                      <span className="card-sub mono" title={`run ${mlflowRun.get(d.decision_id)!.run_id}`}>
+                        ✓ {mlflowRun.get(d.decision_id)!.candidates} runs hijos
+                      </span>
+                    ) : (
+                      <span className="card-sub">pendiente</span>
+                    )}
                   </td>
                 </tr>
               ))}

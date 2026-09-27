@@ -19,11 +19,11 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from common import Api, Skip, connect, load_active, load_config, read_frame, stage
-from pulso_transmi.forecasting import SLOT
+from pulso_transmi.forecasting import SLOT, history_slots
 from pulso_transmi.submission import build_payload, cycle_targets
 
 MAX_REJECTIONS_PER_CYCLE = 3
-HISTORY_HOURS = 6
+HISTORY_MARGIN_HOURS = 2  # holgura sobre la historia que pide la receta (reciente y ancla)
 
 
 def record_cycle(conn: psycopg.Connection, cycle: dict[str, Any]) -> None:
@@ -55,10 +55,11 @@ def prepare(conn: psycopg.Connection, cycle: dict[str, Any], details: dict[str, 
     if model is None:
         raise RuntimeError("no hay modelo activo: ejecuta `python pipeline/retraining.py`")
     cutoff = pd.Timestamp(cycle["data_cutoff"])
+    history_hours = history_slots(model.forecaster.config) / 4 + HISTORY_MARGIN_HOURS
     history = read_frame(
         conn,
         "select station_id, observed_at, demand from pulso.observations where observed_at > %s and observed_at <= %s",
-        (cutoff - pd.Timedelta(hours=HISTORY_HOURS), cutoff),
+        (cutoff - pd.Timedelta(hours=history_hours), cutoff),
     )
     latest = pd.to_datetime(history["observed_at"], utc=True).max() if not history.empty else None
     details["data_lag_slots"] = None if latest is None else int((cutoff - latest) / SLOT)

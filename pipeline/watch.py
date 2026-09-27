@@ -1,6 +1,10 @@
-"""Orquestador: vigila la API y encadena las cuatro etapas en cada ciclo nuevo.
+"""Orquestador: vigila la API y encadena las cinco etapas en cada ciclo nuevo.
 
-    colector → inferencia (POST) → desempeño → reentrenamiento
+    colector → inferencia (POST) → desempeño y drift → reentrenamiento → tracking (MLflow)
+
+El reentrenamiento recibe la accuracy rolling y las alertas de drift que acaba
+de medir la etapa de desempeño: si la accuracy cae bajo el umbral o hay drift,
+entrena y valida candidatos en ese mismo ciclo (≈ cada hora).
 
 Los ciclos se abren cada ~30 min y cierran ~25 min después; un cron horario
 pierde la mayoría. Este vigilante sondea ``/v1/forecast-cycles/current`` cada
@@ -25,6 +29,7 @@ import collector
 import inference
 import performance
 import retraining
+import tracking
 from common import Api, connect, load_config
 
 COLLECT_EVERY_SECONDS = 600
@@ -73,8 +78,12 @@ def tick(state: WatchState) -> None:
                 return
             state.evaluated.add(cycle_id)
             perf = safe("performance", performance.run, conn, api) or {}
-            outcome = safe("retraining", retraining.run, conn, drift=bool(perf.get("drift")), drift_alerts=perf.get("alerts"))
+            outcome = safe("retraining", retraining.run, conn, drift=bool(perf.get("drift")), accuracy=perf.get("accuracy"),
+                           drift_alerts=perf.get("alerts"))
             if outcome is None:
+                state.failures += 1
+            # MLflow no debe frenar el pipeline: si falla, el próximo ciclo re-sincroniza lo pendiente.
+            if safe("tracking", tracking.run, conn) is None:
                 state.failures += 1
 
 

@@ -17,7 +17,9 @@ function stageDetail(stage: string, details: Record<string, unknown>): string {
     case "performance":
       return `accuracy ${d.accuracy ?? "—"} · cobertura ${d.coverage ?? "—"}`;
     case "retraining":
-      return String(d.reason ?? (d.decision ? `decisión: ${d.decision}` : "—"));
+      return String(d.reason ?? (d.decision ? `decisión: ${d.decision}${d.trigger ? ` (${d.trigger})` : ""}` : "—"));
+    case "tracking":
+      return `MLflow: +${d.modelos ?? 0} modelos · +${d.decisiones ?? 0} decisiones · +${d.snapshots ?? 0} cortes`;
     default:
       return "";
   }
@@ -238,7 +240,7 @@ export default async function OverviewPage() {
       <Card
         sub={
           <>
-            Vigilante continuo: sondea la API cada 45 s y en cada ciclo nuevo encadena las cuatro etapas. Última ingesta{" "}
+            Vigilante continuo: sondea la API cada 45 s y en cada ciclo nuevo encadena las cinco etapas. Última ingesta{" "}
             {fmtAgo(clock.last_ingestion_at, now)}.
           </>
         }

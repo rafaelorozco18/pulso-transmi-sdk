@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "pipeline"))
 from collector import validate  # noqa: E402
 from common import load_config  # noqa: E402
 from drift import data_drift_signals, psi, shape_distance  # noqa: E402
-from retraining import recipes  # noqa: E402
+from retraining import choose_trigger, recipes  # noqa: E402
 
 
 def test_collector_accepts_a_clean_batch() -> None:
@@ -44,9 +44,31 @@ def test_collector_rejects_invalid_batches(change: dict) -> None:
 
 def test_config_defines_competing_recipes() -> None:
     options = recipes(load_config())
-    assert set(options) == {"hl14", "hl5", "win7"}
+    assert {"hl14", "hl5", "win7", "hl14-a24", "hl5-a24", "hl5-a12"} <= set(options)
     assert options["win7"].train_window_days == 7 and options["win7"].train_half_life_days is None
     assert options["hl14"].lookback_slots == load_config()["model"]["lookback_slots"]
+    assert options["hl14"].anchor_slots == 0 and options["hl14-a24"].anchor_slots == 96
+
+
+HOUR = pd.Timedelta(hours=1)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({"has_champion": False}, "initial"),
+        ({"force": True}, "manual"),
+        ({"accuracy": 81.5}, "performance"),          # bajo el umbral mínimo → reentrena en este ciclo
+        ({"accuracy": 84.0, "drift": True}, "drift"),
+        ({"accuracy": 84.0}, None),                   # todo bien: no gasta el ciclo
+        ({"accuracy": 84.0, "elapsed": 30 * HOUR}, "scheduled"),
+        ({"accuracy": 81.5, "elapsed": 0 * HOUR}, None),  # ese corte ya se evaluó
+    ],
+)
+def test_retraining_trigger_policy(kwargs: dict, expected: str | None) -> None:
+    cfg = load_config()["retraining"]
+    args = {"has_champion": True, "force": False, "elapsed": HOUR, "accuracy": None, "drift": False, **kwargs}
+    assert choose_trigger(cfg, **args) == expected
 
 
 def test_psi_is_near_zero_for_the_same_distribution_and_large_for_a_shift() -> None:

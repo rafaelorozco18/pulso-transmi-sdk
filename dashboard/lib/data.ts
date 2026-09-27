@@ -39,7 +39,7 @@ export type Snapshot = {
 };
 
 export type StageStatus = {
-  stage: "collector" | "inference" | "performance" | "retraining";
+  stage: "collector" | "inference" | "performance" | "retraining" | "tracking";
   status: "running" | "success" | "skipped" | "failed";
   started_at: string;
   finished_at: string | null;
@@ -91,6 +91,11 @@ export type Decision = {
   champion_accuracy: number | null;
   drift_alerts: string[];
   github_run_id: string | null;
+  /** Accuracy rolling 24 h medida al decidir (desde el reentrenamiento horario). */
+  live_accuracy: number | null;
+  accuracy_below: number | null;
+  best_candidate: string | null;
+  min_gain: number | null;
 };
 
 export type DriftSignal = {
@@ -158,7 +163,7 @@ export async function getSnapshots(): Promise<Snapshot[]> {
 
 export async function getStageStatus(): Promise<StageStatus[]> {
   const rows = await query<Raw>("select * from dashboard.pipeline_stage_status");
-  const order = ["collector", "inference", "performance", "retraining"];
+  const order = ["collector", "inference", "performance", "retraining", "tracking"];
   return rows
     .map((row) => ({
       stage: row.stage as StageStatus["stage"],
@@ -218,6 +223,10 @@ export async function getDecisions(): Promise<Decision[]> {
       champion_accuracy: (signals.champion_accuracy as number | null) ?? null,
       drift_alerts: (signals.drift_alerts as string[]) ?? [],
       github_run_id: row.github_run_id as string | null,
+      live_accuracy: (signals.live_accuracy as number | null) ?? null,
+      accuracy_below: (signals.accuracy_below as number | null) ?? null,
+      best_candidate: (signals.best_candidate as string | null) ?? null,
+      min_gain: (signals.min_gain as number | null) ?? null,
     };
   });
 }
@@ -358,6 +367,43 @@ export async function getLeaderboard(window: "rolling_24h" | "cumulative"): Prom
       coverage: row.coverage as number,
       is_me: Boolean(row.is_me),
       display_name: row.display_name as string | null,
+    })),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// MLflow (tracking en Supabase, esquema mlflow)
+// ---------------------------------------------------------------------------
+
+export type MlflowExperiment = { name: string; runs: number; child_runs: number; last_run_at: string | null };
+export type MlflowRegistryVersion = { version: number; created_at: string; model_version: string | null; aliases: string; run_id: string };
+export type MlflowRetrainingRun = { decision_id: number; run_id: string; run_name: string; candidates: number };
+
+export async function getMlflow(): Promise<{ experiments: MlflowExperiment[]; registry: MlflowRegistryVersion[]; retraining: MlflowRetrainingRun[] }> {
+  const [experiments, registry, retraining] = await Promise.all([
+    query<Raw>("select * from dashboard.mlflow_experiments order by name"),
+    query<Raw>("select * from dashboard.mlflow_registry order by version desc"),
+    query<Raw>("select decision_id, run_id, run_name, candidates from dashboard.mlflow_retraining_runs"),
+  ]);
+  return {
+    experiments: experiments.map((row) => ({
+      name: row.name as string,
+      runs: Number(row.runs),
+      child_runs: Number(row.child_runs),
+      last_run_at: iso(row.last_run_at as Date),
+    })),
+    registry: registry.map((row) => ({
+      version: Number(row.version),
+      created_at: iso(row.created_at as Date)!,
+      model_version: row.model_version as string | null,
+      aliases: (row.aliases as string) ?? "",
+      run_id: row.run_id as string,
+    })),
+    retraining: retraining.map((row) => ({
+      decision_id: Number(row.decision_id),
+      run_id: row.run_id as string,
+      run_name: row.run_name as string,
+      candidates: Number(row.candidates),
     })),
   };
 }

@@ -10,6 +10,12 @@ pública, así que el pronóstico combina dos piezas:
 2. Corrección de nivel: media del log-ratio ``real / perfil`` en los últimos
    ``lookback_slots`` slots de cada estación, amortiguada por ``decay ** h``.
    Absorbe eventos, lluvia y cambios de nivel (drift) que el perfil no ve.
+3. Ancla de nivel (``anchor_slots`` > 0): la corrección no se desvanece hacia
+   cero sino hacia el log-ratio medio de las últimas ``anchor_slots`` (p. ej.
+   96 = 24 h). Ante drift de tendencia o de nivel sostenido, el perfil queda
+   corto de forma persistente y el ancla conserva ese desplazamiento en todos
+   los horizontes:
+   ``log(pred / perfil) = ancla + (reciente − ancla) · decay ** h``.
 
 El backtest de ciclos simulados (``simulate_cycles``) reproduce exactamente
 esa información disponible y es la misma función con la que el reentrenamiento
@@ -37,6 +43,7 @@ class ForecasterConfig:
     max_abs_log_ratio: float = 1.0
     train_half_life_days: float | None = None
     train_window_days: int | None = None
+    anchor_slots: int = 0
 
     @classmethod
     def from_mapping(cls, values: dict[str, Any]) -> "ForecasterConfig":
@@ -89,12 +96,13 @@ class AdaptiveProfileForecaster:
         frame = neutral_context(pd.DataFrame({"station_id": station_id.astype(str).to_numpy(), "observed_at": pd.to_datetime(observed_at, utc=True).to_numpy()}))
         return pd.Series(self.base.predict(frame).to_numpy(), index=station_id.index)
 
-    def level_correction(self, history: pd.DataFrame, data_cutoff: pd.Timestamp) -> pd.Series:
-        """Log-ratio medio real/perfil por estación en los últimos slots ≤ corte."""
+    def level_correction(self, history: pd.DataFrame, data_cutoff: pd.Timestamp, slots: int | None = None) -> pd.Series:
+        """Log-ratio medio real/perfil por estación en los últimos ``slots`` (≤ corte)."""
+        slots = self.config.lookback_slots if slots is None else slots
         cutoff = pd.Timestamp(data_cutoff)
         recent = history.loc[pd.to_datetime(history["observed_at"], utc=True) <= cutoff].copy()
         recent["observed_at"] = pd.to_datetime(recent["observed_at"], utc=True)
-        start = cutoff - SLOT * (self.config.lookback_slots - 1)
+        start = cutoff - SLOT * (slots - 1)
         recent = recent[(recent["observed_at"] >= start) & (recent["demand"] > 0)]
         if recent.empty:
             return pd.Series(0.0, index=pd.Index(self.stations, name="station_id"))
@@ -110,9 +118,21 @@ class AdaptiveProfileForecaster:
         target_at = pd.to_datetime(targets["target_at"], utc=True)
         steps = ((target_at - cutoff) / SLOT).round().astype(int).clip(lower=1)
         base = self.base_prediction(targets["station_id"], target_at)
-        correction = self.level_correction(history, cutoff)
-        ratio = targets["station_id"].astype(str).map(correction).fillna(0.0).to_numpy()
-        return (base * np.exp(ratio * self.config.decay ** steps.to_numpy())).clip(lower=0.0)
+        stations = targets["station_id"].astype(str)
+        recent = stations.map(self.level_correction(history, cutoff)).fillna(0.0).to_numpy()
+        anchor_slots = anchor_of(self.config)
+        anchor = stations.map(self.level_correction(history, cutoff, anchor_slots)).fillna(0.0).to_numpy() if anchor_slots else 0.0
+        return (base * np.exp(anchor + (recent - anchor) * self.config.decay ** steps.to_numpy())).clip(lower=0.0)
+
+
+def anchor_of(config: ForecasterConfig) -> int:
+    """``anchor_slots`` con compatibilidad para modelos serializados antes de existir."""
+    return int(getattr(config, "anchor_slots", 0) or 0)
+
+
+def history_slots(config: ForecasterConfig) -> int:
+    """Slots de historia que necesita la corrección de nivel (reciente y ancla)."""
+    return max(config.lookback_slots, anchor_of(config))
 
 
 def cycle_cutoffs(observations: pd.DataFrame, start: pd.Timestamp, every: pd.Timedelta = pd.Timedelta(minutes=30)) -> list[pd.Timestamp]:
@@ -138,14 +158,20 @@ def simulate_cycles(forecaster: AdaptiveProfileForecaster, observations: pd.Data
     log_ratio = np.log(actual.where(actual > 0) / base)
     cfg = forecaster.config
     rows = []
+    anchor_slots = anchor_of(cfg)
+
+    def mean_ratio(cutoff: pd.Timestamp, slots: int) -> pd.Series:
+        window = log_ratio.loc[cutoff - SLOT * (slots - 1): cutoff]
+        return window.mean().fillna(0.0).clip(-cfg.max_abs_log_ratio, cfg.max_abs_log_ratio)
+
     for cutoff in cutoffs:
-        window = log_ratio.loc[cutoff - SLOT * (cfg.lookback_slots - 1): cutoff]
-        correction = window.mean().fillna(0.0).clip(-cfg.max_abs_log_ratio, cfg.max_abs_log_ratio)
+        correction = mean_ratio(cutoff, cfg.lookback_slots)
+        anchor = mean_ratio(cutoff, anchor_slots) if anchor_slots else 0.0
         for step in HORIZON_STEPS:
             target = cutoff + SLOT * step
             if target not in actual.index:
                 continue
-            prediction = base.loc[target] * np.exp(correction * cfg.decay ** step)
+            prediction = base.loc[target] * np.exp(anchor + (correction - anchor) * cfg.decay ** step)
             rows.append(pd.DataFrame({
                 "cutoff": cutoff, "target_at": target, "horizon_steps": step,
                 "station_id": actual.columns, "demand": actual.loc[target].to_numpy(),

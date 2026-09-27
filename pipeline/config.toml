@@ -34,14 +34,20 @@ shape_alert = 0.10         # distancia de variación total de la forma horaria (
 data_alert_stations = 2    # estaciones en alerta necesarias para disparar drift
 
 [retraining]
-every_hours = 24           # reentrenamiento programado (horas virtuales)
-drift_cooldown_hours = 6   # espera mínima entre reentrenamientos por drift
-eval_hours = 24            # ventana de backtest por ciclos simulados
-min_gain = 0.05            # puntos de accuracy que el candidato debe ganar
+# Se evalúa en cada ciclo (≈ cada hora). Dispara si la accuracy rolling de lo
+# enviado cae bajo accuracy_below, si la etapa de desempeño levanta drift
+# (datos, concepto o desempeño) o si el campeón lleva every_hours sin evaluarse.
+accuracy_below = 83.0      # umbral mínimo de accuracy rolling 24 h (métrica oficial)
+cooldown_hours = 1         # horas virtuales mínimas entre evaluaciones (1 = cada ciclo)
+every_hours = 24           # reentrenamiento programado aunque todo esté bien
+eval_hours = 24            # ventana de backtest por ciclos simulados (sin fuga)
+min_gain = 0.05            # puntos de accuracy que el candidato debe ganarle al campeón
 min_accuracy = 70.0        # piso absoluto para promover
 
-# Recetas candidatas que compiten en cada reentrenamiento. Con drift, las de
-# memoria corta se adaptan más rápido; sin drift, gana la de memoria larga.
+# Recetas candidatas: en cada reentrenamiento se ajustan todas con los datos
+# anteriores a la ventana, se comparan en ciclos simulados y la mejor reemplaza
+# al campeón solo si le gana. Memoria del perfil (vida media / ventana) y ancla
+# de nivel (anchor_slots: 48 = 12 h, 96 = 24 h) para drift de tendencia.
 [[retraining.candidates]]
 name = "hl14"
 train_half_life_days = 14
@@ -53,3 +59,18 @@ train_half_life_days = 5
 [[retraining.candidates]]
 name = "win7"
 train_window_days = 7
+
+[[retraining.candidates]]
+name = "hl14-a24"
+train_half_life_days = 14
+anchor_slots = 96
+
+[[retraining.candidates]]
+name = "hl5-a24"
+train_half_life_days = 5
+anchor_slots = 96
+
+[[retraining.candidates]]
+name = "hl5-a12"
+train_half_life_days = 5
+anchor_slots = 48

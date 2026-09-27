@@ -42,6 +42,32 @@ def test_serving_matches_backtest_for_the_same_cutoff() -> None:
     np.testing.assert_allclose(served.to_numpy(), simulated["prediction"].to_numpy(), rtol=1e-9)
 
 
+def test_serving_matches_backtest_with_a_level_anchor() -> None:
+    data = synthetic(level_shift_from=pd.Timestamp("2026-08-11T00:00:00Z"))
+    model = AdaptiveProfileForecaster(ForecasterConfig(anchor_slots=96)).fit(data[data["observed_at"] < "2026-08-11"])
+    cutoff = pd.Timestamp("2026-08-12T10:00:00Z")
+    simulated = simulate_cycles(model, data, [cutoff])
+    targets = simulated[["station_id", "target_at"]].assign(target_at=lambda f: f["target_at"].map(lambda t: t.isoformat()))
+    served = model.predict_cycle(data, targets, cutoff)
+    np.testing.assert_allclose(served.to_numpy(), simulated["prediction"].to_numpy(), rtol=1e-9)
+
+
+def test_anchor_keeps_a_sustained_trend_at_long_horizons() -> None:
+    # Tendencia sostenida (+1 %/h ≈ +27 % al día): la corrección sin ancla se
+    # desvanece a 60 min; el ancla de 24 h conserva el desplazamiento.
+    data = synthetic(days=12)
+    start = pd.Timestamp("2026-08-11T00:00:00Z")
+    hours = ((data["observed_at"] - start).dt.total_seconds() / 3600).clip(lower=0)
+    data["demand"] = (data["demand"] * np.exp(0.01 * hours)).round()
+    train = data[data["observed_at"] < start]
+    cutoffs = cycle_cutoffs(data[data["observed_at"] >= start + pd.Timedelta(days=1)], start + pd.Timedelta(days=1))
+    plain = AdaptiveProfileForecaster().fit(train)
+    anchored = AdaptiveProfileForecaster(ForecasterConfig(anchor_slots=96)).fit(train)
+    plain_acc = official_accuracy(simulate_cycles(plain, data, cutoffs))
+    anchored_acc = official_accuracy(simulate_cycles(anchored, data, cutoffs))
+    assert anchored_acc["by_horizon"][4] > plain_acc["by_horizon"][4] + 3
+
+
 def test_backtest_does_not_use_data_after_the_cutoff() -> None:
     data = synthetic()
     model = AdaptiveProfileForecaster().fit(data[data["observed_at"] < "2026-08-11"])

@@ -1,17 +1,25 @@
-"""Etapa 4 · Reentrenamiento: decidir → entrenar candidatos → validar → promover.
+"""Etapa 4 · Reentrenamiento: medir → decidir → entrenar candidatos → validar → promover.
 
-Disparadores (se registran en ``retraining_decisions``):
+Corre en cada ciclo (≈ cada hora). Disparadores (se registran en
+``retraining_decisions``):
 - ``initial``: no hay campeón activo;
-- ``scheduled``: el campeón tiene más de ``every_hours`` de datos sin ver;
-- ``drift``: la etapa de desempeño levantó alertas (con cooldown).
+- ``performance``: la accuracy rolling 24 h de lo enviado (métrica oficial,
+  etapa de desempeño) cayó bajo ``accuracy_below``;
+- ``drift``: la etapa de desempeño levantó alertas de datos, concepto o
+  desempeño;
+- ``scheduled``: el campeón lleva ``every_hours`` sin evaluarse;
+- ``manual``: ``--force``.
+``cooldown_hours`` (1 = cada ciclo) evita evaluar dos veces el mismo corte.
 
 Validación sin fuga: la ventana de evaluación son las últimas ``eval_hours``
-virtuales. Cada receta candidata se entrena SOLO con datos anteriores a la
-ventana y se evalúa con ciclos simulados idénticos a los reales. El campeón se
-evalúa igual (tal cual, si su entrenamiento terminó antes de la ventana; si no,
-re-ajustando su receta con los mismos datos). Solo se promueve si el mejor
-candidato supera al campeón por ``min_gain`` puntos; entonces se re-entrena esa
-receta con todos los datos y se guarda como nueva versión activa.
+virtuales. Cada receta candidata (memoria del perfil y ancla de nivel, ver
+``config.toml``) se entrena SOLO con datos anteriores a la ventana y se evalúa
+con ciclos simulados idénticos a los reales. El campeón se evalúa igual (tal
+cual, si su entrenamiento terminó antes de la ventana; si no, re-ajustando su
+receta con los mismos datos). Solo se promueve si el mejor candidato supera al
+campeón por ``min_gain`` puntos; entonces se re-entrena esa receta con todos
+los datos y se guarda como nueva versión activa. Cada decisión guarda el
+detalle de todos los candidatos para que ``tracking.py`` la versione en MLflow.
 """
 
 from __future__ import annotations
@@ -25,7 +33,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from common import Skip, connect, git_commit, latest_observed_at, load_active, load_config, new_version_name, promote, register_model, stage, training_frame
-from pulso_transmi.forecasting import AdaptiveProfileForecaster, ForecasterConfig, cycle_cutoffs, official_accuracy, simulate_cycles
+from pulso_transmi.forecasting import AdaptiveProfileForecaster, ForecasterConfig, cycle_cutoffs, history_slots, official_accuracy, simulate_cycles
 
 
 def recipes(config: dict[str, Any]) -> dict[str, ForecasterConfig]:
@@ -39,38 +47,48 @@ def recipes(config: dict[str, Any]) -> dict[str, ForecasterConfig]:
 
 
 def evaluate(forecaster: AdaptiveProfileForecaster, data: pd.DataFrame, window_start: pd.Timestamp) -> dict[str, Any]:
-    recent = data[data["observed_at"] > window_start - pd.Timedelta(hours=2)]
+    # Historia previa a la ventana suficiente para la corrección reciente y el ancla.
+    margin = pd.Timedelta(minutes=15 * history_slots(forecaster.config)) + pd.Timedelta(hours=2)
+    recent = data[data["observed_at"] > window_start - margin]
     return official_accuracy(simulate_cycles(forecaster, recent, cycle_cutoffs(recent, window_start)))
 
 
-def trigger_for(conn: psycopg.Connection, cfg: dict[str, Any], champion, cutoff: pd.Timestamp, drift: bool, force: bool) -> str | None:
-    if champion is None:
+def choose_trigger(cfg: dict[str, Any], *, has_champion: bool, force: bool, elapsed: pd.Timedelta | None,
+                   accuracy: float | None, drift: bool) -> str | None:
+    """Regla de disparo pura (testeable). ``elapsed``: tiempo virtual desde la última evaluación."""
+    if not has_champion:
         return "initial"
     if force:
         return "manual"
-    # Horas virtuales desde lo último que se evaluó (entrenamiento del campeón o
-    # última decisión): evita re-evaluar en cada ciclo una vez vencido el plazo.
-    last_eval = conn.execute("select max((signals->>'cutoff')::timestamptz) from pulso.retraining_decisions").fetchone()[0]
-    reference = max(champion.training_data_end, pd.Timestamp(last_eval) if last_eval else champion.training_data_end)
-    elapsed = cutoff - reference
-    if elapsed >= pd.Timedelta(hours=cfg["every_hours"]):
-        return "scheduled"
-    if drift and elapsed >= pd.Timedelta(hours=cfg["drift_cooldown_hours"]):
+    if elapsed is not None and elapsed < pd.Timedelta(hours=cfg["cooldown_hours"]):
+        return None
+    if accuracy is not None and accuracy < cfg["accuracy_below"]:
+        return "performance"
+    if drift:
         return "drift"
+    if elapsed is None or elapsed >= pd.Timedelta(hours=cfg["every_hours"]):
+        return "scheduled"
     return None
 
 
+def last_evaluation(conn: psycopg.Connection, champion) -> pd.Timestamp:
+    """Corte de la última evaluación (decisión registrada o fin de entrenamiento del campeón)."""
+    last = conn.execute("select max((signals->>'cutoff')::timestamptz) from pulso.retraining_decisions").fetchone()[0]
+    return max(champion.training_data_end, pd.Timestamp(last)) if last else champion.training_data_end
+
+
 def decide(conn: psycopg.Connection, *, trigger: str, decision: str, reason: str, active: str | None,
-           candidate: str | None, signals: dict[str, Any]) -> None:
-    conn.execute(
+           candidate: str | None, signals: dict[str, Any]) -> int:
+    return conn.execute(
         """insert into pulso.retraining_decisions
            (trigger, decision, reason, active_model_version, candidate_model_version, signals, git_commit, github_run_id)
-           values (%s, %s, %s, %s, %s, %s, %s, %s)""",
+           values (%s, %s, %s, %s, %s, %s, %s, %s) returning decision_id""",
         (trigger, decision, reason, active, candidate, Jsonb(signals), git_commit(), os.getenv("GITHUB_RUN_ID")),
-    )
+    ).fetchone()[0]
 
 
-def run(conn: psycopg.Connection, *, drift: bool = False, force: bool = False, drift_alerts: list[str] | None = None) -> dict[str, Any]:
+def run(conn: psycopg.Connection, *, drift: bool = False, accuracy: float | None = None, force: bool = False,
+        drift_alerts: list[str] | None = None) -> dict[str, Any]:
     config = load_config()
     cfg = config["retraining"]
     with stage(conn, "retraining") as details:
@@ -78,9 +96,12 @@ def run(conn: psycopg.Connection, *, drift: bool = False, force: bool = False, d
         if cutoff is None:
             raise Skip("no hay observaciones")
         champion = load_active(conn)
-        trigger = trigger_for(conn, cfg, champion, cutoff, drift, force)
+        elapsed = cutoff - last_evaluation(conn, champion) if champion else None
+        trigger = choose_trigger(cfg, has_champion=champion is not None, force=force, elapsed=elapsed, accuracy=accuracy, drift=drift)
         if trigger is None:
-            raise Skip(f"drift en cooldown ({cfg['drift_cooldown_hours']} h desde la última evaluación)" if drift
+            if elapsed is not None and elapsed < pd.Timedelta(hours=cfg["cooldown_hours"]):
+                raise Skip("este corte ya fue evaluado")
+            raise Skip(f"sin disparador: accuracy {accuracy:.2f} ≥ {cfg['accuracy_below']} y sin drift" if accuracy is not None
                        else "sin disparador: campeón vigente y sin drift")
         details["trigger"] = trigger
 
@@ -96,21 +117,36 @@ def run(conn: psycopg.Connection, *, drift: bool = False, force: bool = False, d
         best_acc = scores[best]["accuracy"] or 0.0
         details["candidates"] = {name: round(score["accuracy"] or 0.0, 3) for name, score in scores.items()}
 
-        champion_acc = None
+        champion_acc, champion_score = None, None
         if champion is not None:
             reference = champion.forecaster
             if champion.training_data_end > window_start:
                 reference = AdaptiveProfileForecaster(champion.forecaster.config).fit(before_window)
-            champion_acc = evaluate(reference, data, window_start)["accuracy"]
+            champion_score = evaluate(reference, data, window_start)
+            champion_acc = champion_score["accuracy"]
             details["champion"] = {"version": champion.version, "accuracy": None if champion_acc is None else round(champion_acc, 3)}
 
-        signals = {"cutoff": cutoff.isoformat(), "eval_window_start": window_start.isoformat(),
-                   "candidates": details["candidates"], "champion_accuracy": champion_acc, "drift_alerts": drift_alerts or []}
+        signals = {
+            "cutoff": cutoff.isoformat(), "eval_window_start": window_start.isoformat(),
+            "candidates": details["candidates"], "champion_accuracy": champion_acc,
+            "live_accuracy": accuracy, "accuracy_below": cfg["accuracy_below"], "drift_alerts": drift_alerts or [],
+            "best_candidate": best, "min_gain": cfg["min_gain"],
+            "candidate_details": {
+                name: {"config": options[name].as_dict(), "n": score["n"],
+                       "by_horizon": score["by_horizon"], "by_station": score["by_station"]}
+                for name, score in scores.items()
+            },
+            "champion_details": None if champion_score is None else {
+                "version": champion.version, "config": champion.forecaster.config.__dict__,
+                "by_horizon": champion_score["by_horizon"], "by_station": champion_score["by_station"],
+            },
+        }
         promote_it = champion is None or (best_acc >= cfg["min_accuracy"] and best_acc >= (champion_acc or 0.0) + cfg["min_gain"])
         if not promote_it:
             reason = (f"se conserva {champion.version}: mejor candidato {best} {best_acc:.2f} "
                       f"no supera {champion_acc:.2f} + {cfg['min_gain']}")
-            decide(conn, trigger=trigger, decision="keep", reason=reason, active=champion.version, candidate=None, signals=signals)
+            details["decision_id"] = decide(conn, trigger=trigger, decision="keep", reason=reason, active=champion.version,
+                                            candidate=None, signals=signals)
             details["decision"] = "keep"
             return details
 
@@ -122,8 +158,8 @@ def run(conn: psycopg.Connection, *, drift: bool = False, force: bool = False, d
         register_model(conn, version=version, forecaster=final, validation_metrics=metrics, status="candidate")
         promote(conn, version)
         reason = (f"{best} {best_acc:.2f} vs campeón {champion_acc:.2f}" if champion_acc is not None else f"modelo inicial {best} {best_acc:.2f}")
-        decide(conn, trigger=trigger, decision="promote", reason=reason,
-               active=champion.version if champion else None, candidate=version, signals=signals)
+        details["decision_id"] = decide(conn, trigger=trigger, decision="promote", reason=reason,
+                                        active=champion.version if champion else None, candidate=version, signals=signals)
         details.update({"decision": "promote", "model_version": version, "accuracy": round(best_acc, 3)})
     return details
 

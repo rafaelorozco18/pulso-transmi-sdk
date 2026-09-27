@@ -130,8 +130,11 @@ API ──GET──▶ 1. colector ──▶ PostgreSQL (Supabase, esquema pulso
      ▼ (la demanda real llega en los ciclos siguientes)
 3. desempeño: accuracy oficial rolling, cobertura, drift, leaderboard
      │
-     ▼ (programado cada 24 h virtuales o por alerta de drift)
-4. reentrenamiento: recetas candidatas vs. campeón en ciclos simulados → promover o conservar
+     ▼ (cada ciclo: si la accuracy < umbral mínimo o hay drift)
+4. reentrenamiento: 6 recetas candidatas vs. campeón en ciclos simulados → promover o conservar
+     │
+     ▼
+5. tracking: modelos, decisiones (un run hijo por candidato) y monitoreo → MLflow en Supabase
 ```
 
 | Etapa | Archivo | Garantías |
@@ -139,15 +142,17 @@ API ──GET──▶ 1. colector ──▶ PostgreSQL (Supabase, esquema pulso
 | Colector | [`pipeline/collector.py`](pipeline/collector.py) | valida esquema, dominio y duplicados; upsert por `(station_id, observed_at)`; revisiones auditadas |
 | Inferencia | [`pipeline/inference.py`](pipeline/inference.py) | una submission aceptada por ciclo; se persiste `pending` antes del POST y se reintenta con la misma `Idempotency-Key`; cada predicción guarda `model_version` y commit |
 | Desempeño | [`pipeline/performance.py`](pipeline/performance.py) + [`drift.py`](pipeline/drift.py) | `performance_snapshots` (global, por estación y por horizonte) y leaderboard completo; `drift_signals`: desempeño (`wape_rolling`), concepto (`residual_bias`, `profile_shape`), datos (`demand_psi` con test KS) y calidad (`data_quality`) |
-| Reentrenamiento | [`pipeline/retraining.py`](pipeline/retraining.py) | backtest sin fuga; solo promueve si el candidato supera al campeón por `min_gain`; cada decisión queda en `retraining_decisions` |
+| Reentrenamiento | [`pipeline/retraining.py`](pipeline/retraining.py) | cada ciclo; dispara si la accuracy rolling < `accuracy_below`, hay drift o pasaron 24 h; backtest sin fuga; solo promueve si el candidato supera al campeón por `min_gain`; cada decisión queda en `retraining_decisions` |
+| Tracking | [`pipeline/tracking.py`](pipeline/tracking.py) | espeja en MLflow (Supabase) todo lo que aún no tiene `mlflow_run_id`; si falla, el siguiente ciclo lo reintenta sin frenar el pipeline |
 | Orquestador | [`pipeline/watch.py`](pipeline/watch.py) | sondea cada `poll_seconds`; un error no detiene el bucle; resumen en el job de Actions |
 
 Las frecuencias, umbrales y recetas están en
 [`pipeline/config.toml`](pipeline/config.toml), no en el código.
 [`pipeline.yml`](.github/workflows/pipeline.yml) corre el vigilante unas 5,5 h
 y luego se relanza a sí mismo con `workflow_dispatch`. El cron horario solo
-reinicia la cadena si se corta. Requiere los secrets `DATABASE_URL` y
-`PULSO_API_KEY`.
+reinicia la cadena si se corta. Requiere los secrets `DATABASE_URL`,
+`PULSO_API_KEY`, `MLFLOW_DATABASE_URL`, `SUPABASE_ANON_KEY` y
+`SUPABASE_SERVICE_ROLE_KEY`.
 
 ### Drift
 
@@ -171,8 +176,8 @@ anteriores a su introducción.
 ```bash
 python pipeline/retraining.py        # crea el primer campeón (o --force para evaluar)
 python pipeline/watch.py --once      # una pasada completa en local
-python pipeline/sync_mlflow.py       # espeja modelos, decisiones y monitoreo en MLflow
-mlflow ui --backend-store-uri sqlite:///mlflow.db
+python pipeline/tracking.py          # espeja modelos, decisiones y monitoreo en MLflow (nube)
+python pipeline/tracking.py --ui     # abre la UI de MLflow contra el tracking en Supabase
 ```
 
 ### Modelo en producción
@@ -180,7 +185,9 @@ mlflow ui --backend-store-uri sqlite:///mlflow.db
 `AdaptiveProfileForecaster` ([`forecasting.py`](src/pulso_transmi/forecasting.py))
 combina el perfil log-lineal por estación con una corrección de nivel: la media
 de `log(real / perfil)` en los últimos 4 slots, amortiguada por `0.8^h` según el
-horizonte. La API no publica contexto después del corte inicial, así que para
+horizonte. Con `anchor_slots` (recetas `-a12`/`-a24`) la corrección no se
+desvanece hacia cero sino hacia el nivel medio de las últimas 12 o 24 h, lo que
+sostiene la predicción ante drift de tendencia. La API no publica contexto después del corte inicial, así que para
 predecir se usan lluvia y evento neutros; la corrección absorbe eventos, lluvia
 y cambios de nivel. En los ciclos simulados sobre el stream de la competencia:
 
@@ -193,14 +200,41 @@ y cambios de nivel. En los ciclos simulados sobre el stream de la competencia:
 La inferencia usa la misma función que el backtest (hay un test que lo
 verifica), así que la accuracy de validación y la del leaderboard miden lo mismo.
 
+### Reentrenamiento automático ante drift
+
+En cada ciclo (≈ cada hora) la etapa de desempeño mide la accuracy oficial de lo
+enviado y el drift, y el reentrenamiento decide con esa medición
+([`config.toml`](pipeline/config.toml), `[retraining]`):
+
+- **dispara** si la accuracy rolling 24 h cae bajo `accuracy_below` (83), si hay
+  drift de datos, concepto o desempeño, o si el campeón lleva 24 h sin evaluarse;
+- **entrena** las 6 recetas candidatas (memoria del perfil y ancla de nivel) solo
+  con datos anteriores a la ventana de validación;
+- **valida** candidatos y campeón en ciclos simulados de las últimas 24 h con la
+  métrica oficial;
+- **promueve** al mejor si supera al campeón por `min_gain`; el siguiente ciclo ya
+  predice con él.
+
+Ante el drift de tendencia de la competencia, las recetas con ancla de 24 h
+recuperaron ~3 puntos en backtest (84,5 contra 81,5 del campeón sin ancla).
+
 ### MLflow
 
-Los runners de Actions son efímeros, así que Supabase es la fuente de verdad
-de modelos (joblib en `pulso.model_artifacts`), decisiones y desempeño.
-`sync_mlflow.py` lo replica en MLflow en tres experimentos
-(`pulso-transmi-models`, `pulso-transmi-retraining` y
-`pulso-transmi-monitoring`) y en el Model Registry `pulso-transmi-forecaster`,
-donde el alias `champion` apunta al modelo activo.
+MLflow corre en la nube, en el mismo proyecto de Supabase: tracking y Model
+Registry en PostgreSQL (esquema privado `mlflow`, rol `mlflow_writer`) y
+artefactos en Supabase Storage (bucket privado `mlflow`, API S3). La etapa
+`tracking` del pipeline lo actualiza en cada ciclo desde GitHub Actions:
+
+| Experimento | Un run por | Contenido |
+|---|---|---|
+| `pulso-transmi-models` | versión de modelo | hiperparámetros, métricas de validación (global, horizonte, estación) y el joblib; cada versión queda en el Model Registry `pulso-transmi-forecaster` y el alias `champion` apunta a la activa |
+| `pulso-transmi-retraining` | decisión de reentrenamiento | disparador, accuracy en vivo, drift, ganancia vs. campeón y `signals.json`; un **run hijo por receta candidata** y otro para el campeón con su configuración y métricas |
+| `pulso-transmi-monitoring` | versión servida | serie por corte de accuracy rolling, cobertura, leaderboard y drift |
+
+Supabase (`pulso.*`) sigue siendo la fuente de verdad; cada decisión y versión
+guarda su `mlflow_run_id`. Para explorar la UI localmente: `python pipeline/tracking.py --ui`
+(usa `MLFLOW_DATABASE_URL`, `SUPABASE_ANON_KEY` y `SUPABASE_SERVICE_ROLE_KEY` del
+`.env`). El dashboard muestra experimentos, registro y alias en "Modelos y pipeline".
 
 ## GitHub Actions
 

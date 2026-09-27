@@ -13,7 +13,6 @@ import {
   LineChart,
   ReferenceLine,
   ResponsiveContainer,
-  Scatter,
   Tooltip,
   XAxis,
   YAxis,
@@ -537,58 +536,83 @@ export function ErrorHistogram({ bins, mean, median }: { bins: HistogramBin[]; m
 // Modelos: candidatos vs. campeón en cada decisión de reentrenamiento
 // ---------------------------------------------------------------------------
 
-export type DecisionPoint = { ts: number; champion: number | null; hl14?: number; hl5?: number; win7?: number; decision: string; trigger: string };
+export type DecisionPoint = {
+  ts: number;
+  champion: number | null;
+  best: number | null;
+  bestName: string | null;
+  live: number | null;
+  promoted: boolean;
+  decision: string;
+  trigger: string;
+  candidates: Record<string, number>;
+};
 
-const RECIPE_COLORS: Record<string, string> = { hl14: "var(--series-1)", hl5: "var(--series-2)", win7: "var(--series-3)" };
-const RECIPE_LABEL: Record<string, string> = { hl14: "hl14 · vida media 14 d", hl5: "hl5 · vida media 5 d", win7: "win7 · ventana 7 d" };
-
-export function DecisionChart({ data }: { data: DecisionPoint[] }) {
+export function DecisionChart({ data, threshold }: { data: DecisionPoint[]; threshold: number | null }) {
   const ts = data.map((d) => d.ts);
-  const values = data.flatMap((d) => [d.champion, d.hl14, d.hl5, d.win7]).filter((v): v is number => v != null);
-  const y = niceScale(Math.min(...values) - 0.3, Math.max(...values) + 0.3);
+  const values = data.flatMap((d) => [d.champion, d.best, d.live]).filter((v): v is number => v != null);
+  const y = niceScale(Math.min(...values, threshold ?? Infinity) - 0.3, Math.max(...values) + 0.3);
   return (
     <>
       <Legend
         items={[
-          ...Object.keys(RECIPE_COLORS).map((key) => ({ label: RECIPE_LABEL[key], color: RECIPE_COLORS[key], kind: "dot" as const })),
-          { label: "Campeón en la misma ventana", color: "var(--ink)", kind: "line" as const },
+          { label: "Accuracy en vivo (24 h)", color: "var(--series-2)", kind: "line" },
+          { label: "Campeón (backtest)", color: "var(--ink)", kind: "line" },
+          { label: "Mejor candidato (backtest)", color: "var(--series-1)", kind: "line" },
+          { label: "Promoción", color: "var(--good)", kind: "dot" },
+          ...(threshold != null ? [{ label: `Umbral mínimo ${fmtNumber(threshold, 0)}`, color: "var(--muted)", kind: "dash" as const }] : []),
         ]}
       />
-      <div style={{ height: 260, marginTop: 8 }}>
+      <div style={{ height: 280, marginTop: 8 }}>
         <ResponsiveContainer>
           <ComposedChart data={data} margin={{ top: 8, right: 16, bottom: 0, left: -8 }}>
             <CartesianGrid vertical={false} stroke="var(--grid)" />
-            <XAxis dataKey="ts" type="number" scale="time" domain={["dataMin - 3600000", "dataMax + 3600000"]} ticks={timeTicks(ts, tickHours(ts))} tickFormatter={fmtTick} tick={AXIS_TICK} axisLine={AXIS_LINE} tickLine={false} />
+            <XAxis dataKey="ts" type="number" scale="time" domain={["dataMin - 1800000", "dataMax + 1800000"]} ticks={timeTicks(ts, tickHours(ts))} tickFormatter={fmtTick} tick={AXIS_TICK} axisLine={AXIS_LINE} tickLine={false} />
             <YAxis domain={y.domain} ticks={y.ticks} tick={AXIS_TICK} axisLine={false} tickLine={false} width={40} tickFormatter={(v) => fmtNumber(v, 0)} />
+            {threshold != null && <ReferenceLine y={threshold} stroke="var(--muted)" strokeDasharray="4 4" />}
             <Tooltip
               cursor={{ stroke: "var(--axis)" }}
               content={(args) => {
                 const p = tipPayload(args) as DecisionPoint | null;
                 if (!p) return null;
+                const sorted = Object.entries(p.candidates).sort((a, b) => b[1] - a[1]);
                 return (
                   <TipBox
                     title={`Corte ${fmtDateTime(p.ts)}`}
                     rows={[
                       { label: "Disparador", value: p.trigger },
                       { label: "Decisión", value: p.decision },
+                      ...(p.live != null ? [{ label: "Accuracy en vivo", value: fmtNumber(p.live, 2), color: "var(--series-2)" }] : []),
                       { label: "Campeón", value: fmtNumber(p.champion, 2), color: "var(--ink)" },
-                      ...Object.keys(RECIPE_COLORS).map((key) => ({
-                        label: key,
-                        value: fmtNumber(p[key as "hl14"] ?? null, 2),
-                        color: RECIPE_COLORS[key],
+                      ...sorted.map(([name, value]) => ({
+                        label: name === p.bestName ? `${name} (mejor)` : name,
+                        value: fmtNumber(value, 2),
+                        ...(name === p.bestName ? { color: "var(--series-1)" } : {}),
                       })),
                     ]}
                   />
                 );
               }}
             />
+            <Line dataKey="live" stroke="var(--series-2)" strokeWidth={2} dot={false} connectNulls isAnimationActive={false} />
             <Line dataKey="champion" stroke="var(--ink)" strokeWidth={2} dot={false} connectNulls isAnimationActive={false} />
-            {Object.keys(RECIPE_COLORS).map((key) => (
-              <Scatter key={key} dataKey={key} fill={RECIPE_COLORS[key]} stroke="var(--surface)" strokeWidth={2} isAnimationActive={false} shape={(props: unknown) => {
-                const { cx, cy } = props as { cx: number; cy: number };
-                return cx == null || cy == null ? <g /> : <circle cx={cx} cy={cy} r={5} fill={RECIPE_COLORS[key]} stroke="var(--surface)" strokeWidth={2} />;
-              }} />
-            ))}
+            <Line
+              dataKey="best"
+              stroke="var(--series-1)"
+              strokeWidth={2}
+              connectNulls
+              isAnimationActive={false}
+              dot={(props) => {
+                const { cx, cy, payload, index } = props as { cx: number; cy: number; payload: DecisionPoint; index: number };
+                if (cx == null || cy == null) return <g key={index} />;
+                return payload.promoted ? (
+                  <circle key={index} cx={cx} cy={cy} r={6} fill="var(--good)" stroke="var(--surface)" strokeWidth={2} />
+                ) : (
+                  <circle key={index} cx={cx} cy={cy} r={3} fill="var(--series-1)" />
+                );
+              }}
+              activeDot={{ r: 5, strokeWidth: 2, stroke: "var(--surface)" }}
+            />
           </ComposedChart>
         </ResponsiveContainer>
       </div>
