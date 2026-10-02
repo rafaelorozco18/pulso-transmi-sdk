@@ -129,6 +129,14 @@ export default async function ModelsPage() {
                     <td className="num">{hyper.anchor_slots ? `${Number(hyper.anchor_slots) / 4} h` : "sin ancla"}</td>
                   </tr>
                   <tr>
+                    <td>Estacionalidad corta</td>
+                    <td className="num">
+                      {Number(hyper.season_slots ?? 0) === 0
+                        ? "no (ciclo diario)"
+                        : `${Number(hyper.season_slots) < 0 ? "período detectado" : `${Number(hyper.season_slots) / 4} h`} · ${String(hyper.season_cycles ?? "—")} períodos`}
+                    </td>
+                  </tr>
+                  <tr>
                     <td>Validación</td>
                     <td className="num">{fmtNumber(champion.validation_metrics.accuracy, 2)}</td>
                   </tr>

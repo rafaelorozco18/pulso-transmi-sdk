@@ -48,6 +48,8 @@ def test_config_defines_competing_recipes() -> None:
     assert options["win7"].train_window_days == 7 and options["win7"].train_half_life_days is None
     assert options["hl14"].lookback_slots == load_config()["model"]["lookback_slots"]
     assert options["hl14"].anchor_slots == 0 and options["hl14-a24"].anchor_slots == 96
+    assert options["hl14"].season_slots == 0 and options["seas-k3"].season_slots == -1
+    assert options["seas-k3"].season_cycles == 3
 
 
 HOUR = pd.Timedelta(hours=1)

@@ -131,7 +131,7 @@ API ──GET──▶ 1. colector ──▶ PostgreSQL (Supabase, esquema pulso
 3. desempeño: accuracy oficial rolling, cobertura, drift, leaderboard
      │
      ▼ (cada ciclo: si la accuracy < umbral mínimo o hay drift)
-4. reentrenamiento: 6 recetas candidatas vs. campeón en ciclos simulados → promover o conservar
+4. reentrenamiento: 10 recetas candidatas vs. campeón en ciclos simulados → promover o conservar
      │
      ▼
 5. tracking: modelos, decisiones (un run hijo por candidato) y monitoreo → MLflow en Supabase
@@ -200,6 +200,26 @@ y cambios de nivel. En los ciclos simulados sobre el stream de la competencia:
 La inferencia usa la misma función que el backtest (hay un test que lo
 verifica), así que la accuracy de validación y la del leaderboard miden lo mismo.
 
+#### Cambio de régimen del 18-sep (virtual): la demanda se repite cada 4 h
+
+Desde el corte 2026-09-18 04:00 UTC la demanda dejó de seguir el ciclo diario:
+el patrón de las 12 estaciones se repite exactamente cada 16 slots (4 h). Ninguna
+receta de perfil diario podía representarlo (todas quedaron en ~32 de accuracy),
+así que el reentrenamiento disparaba en cada ciclo pero no tenía a quién promover.
+
+El forecaster tiene ahora un modo estacional (`season_slots`): predice cada slot
+como el promedio de los últimos `season_cycles` períodos en el mismo punto del
+ciclo. Con `season_slots = -1` el período se detecta en cada corte (2 h a 24 h),
+así que si el patrón vuelve a cambiar el modelo lo sigue sin tocar código. Las
+recetas `seas-k2`…`seas-k6` compiten con las de perfil en cada reentrenamiento,
+con una ventana de evaluación de 8 h para reaccionar rápido al cambio:
+
+| Corte (virtual) | Perfil diario `hl5-a24` | Estacional detectado |
+|---|---:|---:|
+| 17-sep 20:00 (antes del cambio) | **86,6** | 71,0 |
+| 18-sep 16:00 (12 h después) | 30,4 | **64,4** |
+| 19-sep 10:00 | 35,1 | **92,2** |
+
 ### Reentrenamiento automático ante drift
 
 En cada ciclo (≈ cada hora) la etapa de desempeño mide la accuracy oficial de lo
@@ -208,9 +228,9 @@ enviado y el drift, y el reentrenamiento decide con esa medición
 
 - **dispara** si la accuracy rolling 24 h cae bajo `accuracy_below` (83), si hay
   drift de datos, concepto o desempeño, o si el campeón lleva 24 h sin evaluarse;
-- **entrena** las 6 recetas candidatas (memoria del perfil y ancla de nivel) solo
-  con datos anteriores a la ventana de validación;
-- **valida** candidatos y campeón en ciclos simulados de las últimas 24 h con la
+- **entrena** las 10 recetas candidatas (memoria del perfil, ancla de nivel y
+  estacionalidad corta) solo con datos anteriores a la ventana de validación;
+- **valida** candidatos y campeón en ciclos simulados de las últimas 8 h con la
   métrica oficial;
 - **promueve** al mejor si supera al campeón por `min_gain`; el siguiente ciclo ya
   predice con él.

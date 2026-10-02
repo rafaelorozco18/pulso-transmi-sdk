@@ -16,6 +16,13 @@ pública, así que el pronóstico combina dos piezas:
    corto de forma persistente y el ancla conserva ese desplazamiento en todos
    los horizontes:
    ``log(pred / perfil) = ancla + (reciente − ancla) · decay ** h``.
+4. Estacionalidad corta (``season_slots`` ≠ 0): si la demanda deja de seguir el
+   ciclo diario y se repite con otro período (p. ej. cada 4 h = 16 slots), el
+   pronóstico es el promedio de los últimos ``season_cycles`` períodos en el
+   mismo punto del ciclo. Con ``season_slots = -1`` el período se detecta en
+   cada corte: el que mejor reproduce los últimos ``SEASON_SELECT_SLOTS``
+   slots, o el divisor más corto de ese período si ajusta casi igual (los
+   múltiplos del período real empatan con él).
 
 El backtest de ciclos simulados (``simulate_cycles``) reproduce exactamente
 esa información disponible y es la misma función con la que el reentrenamiento
@@ -24,6 +31,7 @@ compara el campeón contra un candidato.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -34,6 +42,9 @@ from pulso_transmi.baseline import LogLinearProfileModel
 
 SLOT = pd.Timedelta(minutes=15)
 HORIZON_STEPS = (1, 2, 3, 4)
+SEASON_PERIODS = range(8, 97)   # períodos candidatos al detectar (2 h a 24 h)
+SEASON_SELECT_SLOTS = 16        # slots recientes con los que se elige el período
+SEASON_TOLERANCE = 1.15         # error relativo para considerar empatados un período y sus múltiplos
 
 
 @dataclass(frozen=True)
@@ -44,6 +55,8 @@ class ForecasterConfig:
     train_half_life_days: float | None = None
     train_window_days: int | None = None
     anchor_slots: int = 0
+    season_slots: int = 0       # 0 = perfil diario; -1 = detectar período; > 0 = período fijo
+    season_cycles: int = 3      # períodos promediados en el modo estacional
 
     @classmethod
     def from_mapping(cls, values: dict[str, Any]) -> "ForecasterConfig":
@@ -122,7 +135,64 @@ class AdaptiveProfileForecaster:
         recent = stations.map(self.level_correction(history, cutoff)).fillna(0.0).to_numpy()
         anchor_slots = anchor_of(self.config)
         anchor = stations.map(self.level_correction(history, cutoff, anchor_slots)).fillna(0.0).to_numpy() if anchor_slots else 0.0
-        return (base * np.exp(anchor + (recent - anchor) * self.config.decay ** steps.to_numpy())).clip(lower=0.0)
+        profile = (base * np.exp(anchor + (recent - anchor) * self.config.decay ** steps.to_numpy())).clip(lower=0.0)
+        if not season_of(self.config):
+            return profile
+        frame = history.loc[:, ["station_id", "observed_at", "demand"]].copy()
+        frame["station_id"] = frame["station_id"].astype(str)
+        frame["observed_at"] = pd.to_datetime(frame["observed_at"], utc=True)
+        wide = frame.pivot_table(index="observed_at", columns="station_id", values="demand", aggfunc="last")
+        seasonal = self.seasonal_cycle(wide, cutoff)
+        values = [seasonal.at[step, station] if station in seasonal.columns else np.nan
+                  for step, station in zip(steps.to_numpy(), stations, strict=True)]
+        return pd.Series(np.where(np.isnan(values), profile, values), index=targets.index).clip(lower=0.0)
+
+    def seasonal_cycle(self, wide: pd.DataFrame, data_cutoff: pd.Timestamp) -> pd.DataFrame:
+        """Pronóstico estacional (horizonte × estación) con la demanda ≤ corte; NaN si falta historia."""
+        cutoff = pd.Timestamp(data_cutoff)
+        cycles = max(1, int(self.config.season_cycles))
+        period = season_of(self.config)
+        size = (max(SEASON_PERIODS) if period < 0 else period) * cycles + SEASON_SELECT_SLOTS
+        grid = pd.date_range(end=cutoff, periods=size + 1, freq=SLOT)
+        frame = wide.loc[:cutoff].reindex(grid).reindex(columns=self.stations)
+        frame = frame.where(frame > 0)
+        values = frame.to_numpy(dtype=float)
+        last = len(grid) - 1
+        if period < 0:
+            period = detect_period(values, cycles)
+        if period <= 0:
+            return pd.DataFrame(np.nan, index=list(HORIZON_STEPS), columns=self.stations)
+        rows = [seasonal_mean(values, last + step, period, cycles) for step in HORIZON_STEPS]
+        return pd.DataFrame(rows, index=list(HORIZON_STEPS), columns=self.stations)
+
+
+def seasonal_mean(values: np.ndarray, position: int, period: int, cycles: int) -> np.ndarray:
+    """Promedio de la demanda ``k · period`` slots antes de ``position`` (k = 1..cycles)."""
+    lags = [position - k * period for k in range(1, cycles + 1) if 0 <= position - k * period < len(values)]
+    if not lags:
+        return np.full(values.shape[1], np.nan)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # estación sin ningún dato en esos lags → NaN
+        return np.nanmean(values[lags], axis=0)
+
+
+def detect_period(values: np.ndarray, cycles: int) -> int:
+    """Período (slots) que mejor reproduce los últimos slots; 0 si no hay historia suficiente."""
+    last = len(values) - 1
+    actual = values[last - SEASON_SELECT_SLOTS + 1: last + 1]
+    errors = {}
+    for period in SEASON_PERIODS:
+        predicted = np.array([seasonal_mean(values, position, period, cycles)
+                              for position in range(last - SEASON_SELECT_SLOTS + 1, last + 1)])
+        valid = ~(np.isnan(actual) | np.isnan(predicted))
+        if valid.mean() < 0.8:
+            continue
+        errors[period] = np.abs(actual - predicted)[valid].sum() / max(actual[valid].sum(), 1.0)
+    if not errors:
+        return 0
+    best = min(errors, key=errors.get)
+    # Los múltiplos del período real ajustan casi igual: se toma el divisor más corto que empate.
+    return min(period for period, error in errors.items() if best % period == 0 and error <= errors[best] * SEASON_TOLERANCE)
 
 
 def anchor_of(config: ForecasterConfig) -> int:
@@ -130,9 +200,19 @@ def anchor_of(config: ForecasterConfig) -> int:
     return int(getattr(config, "anchor_slots", 0) or 0)
 
 
+def season_of(config: ForecasterConfig) -> int:
+    """``season_slots`` con compatibilidad para modelos serializados antes de existir."""
+    return int(getattr(config, "season_slots", 0) or 0)
+
+
 def history_slots(config: ForecasterConfig) -> int:
-    """Slots de historia que necesita la corrección de nivel (reciente y ancla)."""
-    return max(config.lookback_slots, anchor_of(config))
+    """Slots de historia que necesita la corrección de nivel (reciente y ancla) y la estacionalidad."""
+    slots = max(config.lookback_slots, anchor_of(config))
+    period = season_of(config)
+    if period:
+        cycles = max(1, int(getattr(config, "season_cycles", 3)))
+        slots = max(slots, (max(SEASON_PERIODS) if period < 0 else period) * cycles + SEASON_SELECT_SLOTS)
+    return slots
 
 
 def cycle_cutoffs(observations: pd.DataFrame, start: pd.Timestamp, every: pd.Timedelta = pd.Timedelta(minutes=30)) -> list[pd.Timestamp]:
@@ -167,11 +247,14 @@ def simulate_cycles(forecaster: AdaptiveProfileForecaster, observations: pd.Data
     for cutoff in cutoffs:
         correction = mean_ratio(cutoff, cfg.lookback_slots)
         anchor = mean_ratio(cutoff, anchor_slots) if anchor_slots else 0.0
+        seasonal = forecaster.seasonal_cycle(actual, cutoff) if season_of(cfg) else None
         for step in HORIZON_STEPS:
             target = cutoff + SLOT * step
             if target not in actual.index:
                 continue
-            prediction = base.loc[target] * np.exp(anchor + (correction - anchor) * cfg.decay ** step)
+            prediction = (base.loc[target] * np.exp(anchor + (correction - anchor) * cfg.decay ** step)).clip(lower=0.0)
+            if seasonal is not None:
+                prediction = seasonal.loc[step].reindex(actual.columns).fillna(prediction)
             rows.append(pd.DataFrame({
                 "cutoff": cutoff, "target_at": target, "horizon_steps": step,
                 "station_id": actual.columns, "demand": actual.loc[target].to_numpy(),
