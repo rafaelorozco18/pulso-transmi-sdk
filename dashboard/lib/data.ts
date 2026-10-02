@@ -96,6 +96,8 @@ export type Decision = {
   accuracy_below: number | null;
   best_candidate: string | null;
   min_gain: number | null;
+  /** Horas virtuales de la ventana de backtest (cutoff − eval_window_start). */
+  eval_hours: number | null;
 };
 
 export type DriftSignal = {
@@ -227,6 +229,10 @@ export async function getDecisions(): Promise<Decision[]> {
       accuracy_below: (signals.accuracy_below as number | null) ?? null,
       best_candidate: (signals.best_candidate as string | null) ?? null,
       min_gain: (signals.min_gain as number | null) ?? null,
+      eval_hours:
+        signals.cutoff && signals.eval_window_start
+          ? (Date.parse(signals.cutoff as string) - Date.parse(signals.eval_window_start as string)) / 3_600_000
+          : null,
     };
   });
 }

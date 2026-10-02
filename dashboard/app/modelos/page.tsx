@@ -46,6 +46,7 @@ export default async function ModelsPage() {
   const latestDecision = decisions.at(-1);
   const policy = [...decisions].reverse().find((d) => d.accuracy_below != null);
   const recipes = Object.keys(latestDecision?.candidates ?? {});
+  const evalHours = latestDecision?.eval_hours != null ? `${fmtNumber(latestDecision.eval_hours, 0)} h` : "la ventana de evaluación";
   const mlflowRun = new Map(mlflow.retraining.map((r) => [r.decision_id, r]));
 
   const stages = ["collector", "inference", "performance", "retraining", "tracking"];
@@ -93,7 +94,7 @@ export default async function ModelsPage() {
         <Card
           className="span-2"
           title="Accuracy en vivo y respuesta del reentrenamiento"
-          sub="Cuando la accuracy en vivo cae bajo el umbral, el reentrenamiento compara candidatos y campeón en ciclos simulados de las últimas 24 h (sin fuga). Un candidato solo reemplaza al campeón si lo supera por el margen mínimo."
+          sub={`Cuando la accuracy en vivo cae bajo el umbral, el reentrenamiento compara candidatos y campeón en ciclos simulados de las últimas ${evalHours} (sin fuga). Un candidato solo reemplaza al campeón si lo supera por el margen mínimo.`}
         >
           {points.length ? <DecisionChart data={points} threshold={policy?.accuracy_below ?? null} /> : <Empty>Sin decisiones.</Empty>}
         </Card>
@@ -109,8 +110,12 @@ export default async function ModelsPage() {
               <table>
                 <tbody>
                   <tr>
-                    <td>Perfil</td>
-                    <td>Regresión log-lineal por estación (slot × tipo de día)</td>
+                    <td>Predicción</td>
+                    <td>
+                      {Number(hyper.season_slots ?? 0) === 0
+                        ? "Perfil log-lineal por estación (slot × tipo de día) + corrección de nivel"
+                        : "Promedio de los últimos períodos en el mismo punto del ciclo (perfil diario como respaldo)"}
+                    </td>
                   </tr>
                   <tr>
                     <td>Vida media</td>
@@ -171,14 +176,15 @@ export default async function ModelsPage() {
             <li>
               <b>Qué entrena</b>
               <span>
-                {recipes.length} recetas candidatas ({recipes.join(", ")}): memoria del perfil (vida media o ventana) y ancla de nivel (a12 = 12 h,
-                a24 = 24 h) para absorber drift de tendencia.
+                {recipes.length} recetas candidatas ({recipes.join(", ")}): memoria del perfil (vida media o ventana), ancla de nivel (a12 = 12 h,
+                a24 = 24 h) para drift de tendencia, y estacionalidad corta (seas-k2…k6: período detectado en cada corte, promedio de 2 a 6
+                períodos) para cuando la demanda deja de seguir el ciclo diario.
               </span>
             </li>
             <li>
               <b>Cómo valida</b>
               <span>
-                Cada receta se entrena solo con datos anteriores a la ventana de 24 h y se evalúa en ciclos simulados idénticos a los reales, con
+                Cada receta se entrena solo con datos anteriores a la ventana de {evalHours} y se evalúa en ciclos simulados idénticos a los reales, con
                 la métrica oficial; el campeón se evalúa igual.
               </span>
             </li>

@@ -167,7 +167,7 @@ Cada corte se evalúa con una ventana rolling de 24 h virtuales frente al campe�
 | Datos | `data_quality` | slots faltantes | cualquier hueco |
 
 Dos o más estaciones en alerta en una señal por estación, o la accuracy bajo el
-umbral, disparan la evaluación de reentrenamiento (con 6 h de cooldown). Los
+umbral, disparan la evaluación de reentrenamiento en ese mismo ciclo (una vez por corte). Los
 umbrales se calibraron sobre el historial: el PSI de estaciones estables ronda
 0,1 por ruido de muestreo y la distancia de forma, 0,04.
 `python pipeline/backfill_drift.py` recalcula las señales de datos para cortes

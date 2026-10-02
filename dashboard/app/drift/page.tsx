@@ -332,7 +332,7 @@ export default async function DriftPage() {
             <li>
               <b>Respuesta</b>
               <span>
-                Con drift (y 6 h de cooldown) se entrenan las recetas candidatas y se comparan con el campeón en ciclos simulados sin fuga; solo se
+                Con drift se evalúan en el mismo ciclo (como máximo una vez por corte) las recetas candidatas y se comparan con el campeón en ciclos simulados sin fuga; solo se
                 promueve si gana por 0,05 puntos.
               </span>
             </li>
