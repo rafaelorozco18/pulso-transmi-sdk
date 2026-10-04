@@ -98,3 +98,23 @@ season_cycles = 4
 name = "seas-k6"
 season_slots = -1
 season_cycles = 6
+
+# Tendencia local amortiguada: último valor + pendiente de los últimos
+# trend_slots slots (phi = trend_damping). Para justo después de un cambio de
+# régimen, cuando todavía no hay dos períodos del patrón nuevo que promediar
+# (sabotaje 3, 3-oct: tras el cambio de esquema la demanda dejó el ciclo de
+# 4 h; la tendencia da ~80 frente a ~17 del estacional en backtest).
+[[retraining.candidates]]
+name = "trend-k3"
+trend_slots = 3
+trend_damping = 0.6
+
+[[retraining.candidates]]
+name = "trend-k4"
+trend_slots = 4
+trend_damping = 0.7
+
+[[retraining.candidates]]
+name = "trend-k6"
+trend_slots = 6
+trend_damping = 0.8

@@ -20,7 +20,40 @@ def test_collector_accepts_a_clean_batch() -> None:
         "observed_at": ["2026-09-11T17:00:00Z", "2026-09-11T17:00:00Z"],
         "demand": [141, 91],
     })
-    assert validate(batch, {"02300", "10009"}) == {"rows": 2, "slots_incompletos": 0}
+    clean, details = validate(batch, {"02300", "10009"})
+    assert details == {"rows": 2, "slots_incompletos": 0} and clean["demand"].tolist() == [141, 91]
+
+
+def test_collector_reads_schema_v2_measurements() -> None:
+    # API 0.9.0 (3-oct): la demanda pasa a measurement = {value: "546.00", unit, quality}.
+    batch = pd.DataFrame({
+        "station_id": ["02300", "10009", "02300", "10009"],
+        "observed_at": ["2026-09-20T12:00:00Z"] * 2 + ["2026-09-20T12:15:00Z"] * 2,
+        "demand": [556, 360, None, None],
+        "schema_version": [None, None, 2, 2],
+        "measurement": [None, None,
+                        {"value": "546.00", "unit": "passengers", "quality": "observed"},
+                        {"value": None, "unit": "passengers", "quality": "missing"}],
+    })
+    clean, details = validate(batch, {"02300", "10009"}, pd.Timestamp("2026-09-20T12:00:00Z"))
+    assert clean["demand"].tolist() == [556, 360, 546]
+    assert details["faltantes_api"] == 1 and details["slots_incompletos"] == 1
+
+
+def test_collector_fails_on_an_unknown_unit() -> None:
+    batch = pd.DataFrame({
+        "station_id": ["02300"], "observed_at": ["2026-09-20T12:15:00Z"], "demand": [None],
+        "measurement": [{"value": "5.46", "unit": "hundreds", "quality": "observed"}],
+    })
+    with pytest.raises(ValueError, match="unidad"):
+        validate(batch, {"02300"})
+
+
+def test_collector_quarantines_a_few_bad_rows_instead_of_dropping_the_batch() -> None:
+    times = [f"2026-09-20T{h:02d}:00:00Z" for h in range(10)]
+    batch = pd.DataFrame({"station_id": "02300", "observed_at": times, "demand": [100] * 9 + [-5]})
+    clean, details = validate(batch, {"02300"})
+    assert len(clean) == 9 and details["descartadas"] == {"demanda_invalida": 1}
 
 
 @pytest.mark.parametrize(
@@ -50,6 +83,7 @@ def test_config_defines_competing_recipes() -> None:
     assert options["hl14"].anchor_slots == 0 and options["hl14-a24"].anchor_slots == 96
     assert options["hl14"].season_slots == 0 and options["seas-k3"].season_slots == -1
     assert options["seas-k3"].season_cycles == 3
+    assert options["trend-k4"].trend_slots == 4 and options["hl14"].trend_slots == 0
 
 
 HOUR = pd.Timedelta(hours=1)

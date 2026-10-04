@@ -23,6 +23,14 @@ pública, así que el pronóstico combina dos piezas:
    cada corte: el que mejor reproduce los últimos ``SEASON_SELECT_SLOTS``
    slots, o el divisor más corto de ese período si ajusta casi igual (los
    múltiplos del período real empatan con él).
+5. Tendencia local (``trend_slots`` > 0): si no hay período que seguir (justo
+   después de un cambio de régimen), el pronóstico es el último valor más la
+   pendiente de los últimos ``trend_slots`` slots, amortiguada por
+   ``trend_damping ** i`` en cada paso.
+
+Si el colector se atrasa, la estacionalidad y la tendencia se anclan en el
+último slot con datos en vez de exigir datos hasta el corte (antes caían al
+perfil diario).
 
 El backtest de ciclos simulados (``simulate_cycles``) reproduce exactamente
 esa información disponible y es la misma función con la que el reentrenamiento
@@ -45,6 +53,7 @@ HORIZON_STEPS = (1, 2, 3, 4)
 SEASON_PERIODS = range(8, 97)   # períodos candidatos al detectar (2 h a 24 h)
 SEASON_SELECT_SLOTS = 16        # slots recientes con los que se elige el período
 SEASON_TOLERANCE = 1.15         # error relativo para considerar empatados un período y sus múltiplos
+MAX_DATA_LAG_SLOTS = 48         # atraso máximo del colector que se tolera anclando en el último dato (12 h)
 
 
 @dataclass(frozen=True)
@@ -57,6 +66,8 @@ class ForecasterConfig:
     anchor_slots: int = 0
     season_slots: int = 0       # 0 = perfil diario; -1 = detectar período; > 0 = período fijo
     season_cycles: int = 3      # períodos promediados en el modo estacional
+    trend_slots: int = 0        # 0 = sin tendencia; > 0 = slots con los que se estima la pendiente local
+    trend_damping: float = 0.7  # amortiguación de la pendiente por paso (phi ** i)
 
     @classmethod
     def from_mapping(cls, values: dict[str, Any]) -> "ForecasterConfig":
@@ -136,39 +147,72 @@ class AdaptiveProfileForecaster:
         anchor_slots = anchor_of(self.config)
         anchor = stations.map(self.level_correction(history, cutoff, anchor_slots)).fillna(0.0).to_numpy() if anchor_slots else 0.0
         profile = (base * np.exp(anchor + (recent - anchor) * self.config.decay ** steps.to_numpy())).clip(lower=0.0)
-        if not season_of(self.config):
+        if not (season_of(self.config) or trend_of(self.config)):
             return profile
         frame = history.loc[:, ["station_id", "observed_at", "demand"]].copy()
         frame["station_id"] = frame["station_id"].astype(str)
         frame["observed_at"] = pd.to_datetime(frame["observed_at"], utc=True)
         wide = frame.pivot_table(index="observed_at", columns="station_id", values="demand", aggfunc="last")
-        seasonal = self.seasonal_cycle(wide, cutoff)
+        seasonal = self.local_cycle(wide, cutoff)
         values = [seasonal.at[step, station] if station in seasonal.columns else np.nan
                   for step, station in zip(steps.to_numpy(), stations, strict=True)]
         return pd.Series(np.where(np.isnan(values), profile, values), index=targets.index).clip(lower=0.0)
 
+    def local_cycle(self, wide: pd.DataFrame, data_cutoff: pd.Timestamp) -> pd.DataFrame:
+        """Pronóstico de corto plazo (horizonte × estación): estacional o tendencia local; NaN → perfil."""
+        if season_of(self.config):
+            return self.seasonal_cycle(wide, data_cutoff)
+        return self.trend_cycle(wide, data_cutoff)
+
+    def recent_grid(self, wide: pd.DataFrame, data_cutoff: pd.Timestamp, size: int) -> tuple[np.ndarray, int]:
+        """Demanda > 0 en los ``size + 1`` slots hasta el corte y el índice del último slot con datos."""
+        cutoff = pd.Timestamp(data_cutoff)
+        grid = pd.date_range(end=cutoff, periods=size + MAX_DATA_LAG_SLOTS + 1, freq=SLOT)
+        frame = wide.loc[:cutoff].reindex(grid).reindex(columns=self.stations)
+        values = frame.where(frame > 0).to_numpy(dtype=float)
+        filled = np.flatnonzero(np.isfinite(values).mean(axis=1) >= 0.5)
+        return values, int(filled[-1]) if len(filled) else -1
+
     def seasonal_cycle(self, wide: pd.DataFrame, data_cutoff: pd.Timestamp) -> pd.DataFrame:
         """Pronóstico estacional (horizonte × estación) con la demanda ≤ corte; NaN si falta historia."""
-        cutoff = pd.Timestamp(data_cutoff)
         cycles = max(1, int(self.config.season_cycles))
         period = season_of(self.config)
         size = (max(SEASON_PERIODS) if period < 0 else period) * cycles + SEASON_SELECT_SLOTS
-        grid = pd.date_range(end=cutoff, periods=size + 1, freq=SLOT)
-        frame = wide.loc[:cutoff].reindex(grid).reindex(columns=self.stations)
-        frame = frame.where(frame > 0)
-        values = frame.to_numpy(dtype=float)
-        last = len(grid) - 1
+        values, end = self.recent_grid(wide, data_cutoff, size)
+        last = len(values) - 1
+        if end < 0:
+            return pd.DataFrame(np.nan, index=list(HORIZON_STEPS), columns=self.stations)
         if period < 0:
-            period = detect_period(values, cycles)
+            period = detect_period(values[: end + 1], cycles)
         if period <= 0:
             return pd.DataFrame(np.nan, index=list(HORIZON_STEPS), columns=self.stations)
-        rows = [seasonal_mean(values, last + step, period, cycles) for step in HORIZON_STEPS]
+        rows = [seasonal_mean(values, last + step, period, cycles, end) for step in HORIZON_STEPS]
         return pd.DataFrame(rows, index=list(HORIZON_STEPS), columns=self.stations)
 
+    def trend_cycle(self, wide: pd.DataFrame, data_cutoff: pd.Timestamp) -> pd.DataFrame:
+        """Último valor + pendiente local amortiguada, por estación, desde su último slot con datos."""
+        slots = max(2, int(self.config.trend_slots))
+        phi = float(getattr(self.config, "trend_damping", 0.7))
+        values, _ = self.recent_grid(wide, data_cutoff, slots)
+        last = len(values) - 1
+        result = pd.DataFrame(np.nan, index=list(HORIZON_STEPS), columns=self.stations)
+        for column, station in enumerate(self.stations):
+            observed = np.flatnonzero(np.isfinite(values[:, column]))[-slots:]
+            if len(observed) < 2 or observed[-1] < last - MAX_DATA_LAG_SLOTS:
+                continue
+            slope = np.polyfit(observed, values[observed, column], 1)[0]
+            level = values[observed[-1], column]
+            for step in HORIZON_STEPS:
+                ahead = last + step - observed[-1]
+                result.at[step, station] = max(0.0, level + slope * sum(phi ** i for i in range(1, ahead + 1)))
+        return result
 
-def seasonal_mean(values: np.ndarray, position: int, period: int, cycles: int) -> np.ndarray:
-    """Promedio de la demanda ``k · period`` slots antes de ``position`` (k = 1..cycles)."""
-    lags = [position - k * period for k in range(1, cycles + 1) if 0 <= position - k * period < len(values)]
+
+def seasonal_mean(values: np.ndarray, position: int, period: int, cycles: int, end: int | None = None) -> np.ndarray:
+    """Promedio de los ``cycles`` valores ``k · period`` slots antes de ``position`` que ya son ≤ ``end``."""
+    end = len(values) - 1 if end is None else end
+    first = max(1, -(-(position - end) // period))
+    lags = [position - k * period for k in range(first, first + cycles) if 0 <= position - k * period <= end]
     if not lags:
         return np.full(values.shape[1], np.nan)
     with warnings.catch_warnings():
@@ -205,13 +249,18 @@ def season_of(config: ForecasterConfig) -> int:
     return int(getattr(config, "season_slots", 0) or 0)
 
 
+def trend_of(config: ForecasterConfig) -> int:
+    """``trend_slots`` con compatibilidad para modelos serializados antes de existir."""
+    return int(getattr(config, "trend_slots", 0) or 0)
+
+
 def history_slots(config: ForecasterConfig) -> int:
     """Slots de historia que necesita la corrección de nivel (reciente y ancla) y la estacionalidad."""
-    slots = max(config.lookback_slots, anchor_of(config))
+    slots = max(config.lookback_slots, anchor_of(config), trend_of(config) + MAX_DATA_LAG_SLOTS)
     period = season_of(config)
     if period:
         cycles = max(1, int(getattr(config, "season_cycles", 3)))
-        slots = max(slots, (max(SEASON_PERIODS) if period < 0 else period) * cycles + SEASON_SELECT_SLOTS)
+        slots = max(slots, (max(SEASON_PERIODS) if period < 0 else period) * cycles + SEASON_SELECT_SLOTS + MAX_DATA_LAG_SLOTS)
     return slots
 
 
@@ -247,7 +296,7 @@ def simulate_cycles(forecaster: AdaptiveProfileForecaster, observations: pd.Data
     for cutoff in cutoffs:
         correction = mean_ratio(cutoff, cfg.lookback_slots)
         anchor = mean_ratio(cutoff, anchor_slots) if anchor_slots else 0.0
-        seasonal = forecaster.seasonal_cycle(actual, cutoff) if season_of(cfg) else None
+        seasonal = forecaster.local_cycle(actual, cutoff) if season_of(cfg) or trend_of(cfg) else None
         for step in HORIZON_STEPS:
             target = cutoff + SLOT * step
             if target not in actual.index:

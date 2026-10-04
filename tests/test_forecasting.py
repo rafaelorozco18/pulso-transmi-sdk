@@ -87,6 +87,44 @@ def test_season_detects_a_short_period_the_daily_profile_cannot_follow() -> None
     assert detect_period(grid, 3) == 16
 
 
+def test_serving_matches_backtest_with_a_local_trend() -> None:
+    data = short_cycle()
+    model = AdaptiveProfileForecaster(ForecasterConfig(trend_slots=4, trend_damping=0.7)).fit(data[data["observed_at"] < "2026-08-10"])
+    cutoff = pd.Timestamp("2026-08-12T10:00:00Z")
+    simulated = simulate_cycles(model, data, [cutoff])
+    targets = simulated[["station_id", "target_at"]].assign(target_at=lambda f: f["target_at"].map(lambda t: t.isoformat()))
+    served = model.predict_cycle(data[data["observed_at"] <= cutoff], targets, cutoff)
+    np.testing.assert_allclose(served.to_numpy(), simulated["prediction"].to_numpy(), rtol=1e-9)
+
+
+def test_local_trend_follows_a_new_regime_the_profile_does_not_know() -> None:
+    # Sabotaje del 3-oct: la demanda deja el ciclo diario por una onda lenta sin historia.
+    data = synthetic(days=12)
+    position = (data["observed_at"] - pd.Timestamp("2026-08-12T00:00:00Z")) / pd.Timedelta(minutes=15)
+    scale = data["station_id"].map({"02300": 200, "10009": 60})
+    slow = (scale * (2 + np.sin(2 * np.pi * position / 27))).round()
+    data = data.assign(demand=np.where(position >= 0, slow, data["demand"]))
+    train = data[data["observed_at"] < "2026-08-10"]
+    cutoffs = cycle_cutoffs(data, pd.Timestamp("2026-08-12T03:00:00Z"))[:16]
+    profile = official_accuracy(simulate_cycles(AdaptiveProfileForecaster().fit(train), data, cutoffs))["accuracy"]
+    trend_model = AdaptiveProfileForecaster(ForecasterConfig(trend_slots=4, trend_damping=0.7)).fit(train)
+    trend = official_accuracy(simulate_cycles(trend_model, data, cutoffs))["accuracy"]
+    assert trend > 85 and trend > profile + 10
+
+
+def test_season_survives_a_stale_collector() -> None:
+    # Si el colector se atrasa, el estacional se ancla en el último dato en vez de caer al perfil diario.
+    data = short_cycle(days=12)
+    model = AdaptiveProfileForecaster(ForecasterConfig(season_slots=-1, season_cycles=3)).fit(data[data["observed_at"] < "2026-08-10"])
+    cutoff = pd.Timestamp("2026-08-12T10:00:00Z")
+    stale = data[data["observed_at"] <= cutoff - pd.Timedelta(hours=9)]
+    targets = pd.DataFrame({"station_id": STATIONS * 4,
+                            "target_at": [(cutoff + pd.Timedelta(minutes=15 * h)).isoformat() for h in (1, 2, 3, 4) for _ in STATIONS]})
+    served = model.predict_cycle(stale, targets, cutoff)
+    actual = targets.merge(data.assign(target_at=data["observed_at"].map(lambda t: t.isoformat())), on=["station_id", "target_at"])["demand"]
+    assert 1 - (served.to_numpy() - actual.to_numpy()).__abs__().sum() / actual.sum() > 0.9
+
+
 def test_anchor_keeps_a_sustained_trend_at_long_horizons() -> None:
     # Tendencia sostenida (+1 %/h ≈ +27 % al día): la corrección sin ancla se
     # desvanece a 60 min; el ancla de 24 h conserva el desplazamiento.
